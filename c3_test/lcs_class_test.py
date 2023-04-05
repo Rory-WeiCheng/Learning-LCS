@@ -280,7 +280,9 @@ class LCS_PN:
 class LCS_VN:
 
     def __init__(self, n_state, n_control, n_lam, A=None, B=None, C=None, dyn_offset=None,
-                 D=None, E=None, G_para=None, H=None, lcp_offset=None, F_stiffness=1.0):
+                 D=None, E=None, G_para=None, H=None, lcp_offset=None, F_stiffness=1.0,
+                 A_indices=None, B_indices=None, C_indices=None, dyn_offset_indices=None,
+                 D_indices=None, E_indices=None, G_indices=None, H_indices=None, lcp_offset_indices=None):
         self.n_state = n_state
         self.n_control = n_control
         self.n_lam = n_lam
@@ -371,6 +373,15 @@ class LCS_VN:
                 else:
                     G[i, j] = G_para[int((j + 1) * j / 2) + i]
         return G
+    def FixMatrices(self, M_para_learn, Learn_indices, M_para_fixed, Fixed_indices, dim_M):
+        # The function is constructing matrices given the learnt parameters and their indices and
+        # the fixed entries and their indices
+        # dimension of the matrices should also be assigned to let this function work for all matrices
+        if type(M_para_learn) is casadi.SX:
+            M = SX(dim_M[0], dim_M[1])
+        M[Learn_indices] = M_para_learn
+        M[Fixed_indices] = M_para_fixed
+        return M
 
     def diff(self, gamma=1e-2, epsilon=1., F_ref=0., w_F=0., C_ref=0., w_C=0.):
 
