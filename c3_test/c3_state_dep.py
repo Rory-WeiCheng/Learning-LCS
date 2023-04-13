@@ -132,26 +132,29 @@ c_init = np.zeros(n_lam)
 
 # reparameterization part F divided into G and H_re
 # F_init_m = lcs_init['F_lcs'][0] + 0.5 * np.eye(n_lam,n_lam) # force F to be positive definite
-F_init_m = 0.5 * np.eye(n_lam,n_lam) # force F to be positive definite
-G_init = np.linalg.cholesky((F_init_m+F_init_m.T)/2).T
-G_init_list = []
-for j in range(G_init.shape[1]):
-    G_init_list.append(G_init[0:j+1,j])
-G_init = np.concatenate(G_init_list)
-H_re_init = 0.5 * F_init_m.flatten('F')
+# F_init_m = 0.5 * np.eye(n_lam,n_lam) # force F to be positive definite
+# G_init = np.linalg.cholesky((F_init_m+F_init_m.T)/2).T
+# G_init_list = []
+# for j in range(G_init.shape[1]):
+#     G_init_list.append(G_init[0:j+1,j])
+# G_init = np.concatenate(G_init_list)
+# H_re_init = 0.5 * F_init_m.flatten('F')
+
+G_init = np.zeros(int((n_lam + 1) * n_lam / 2)).flatten('F')
+H_re_init = np.zeros((n_lam,n_lam)).flatten('F')
 
 # There are two warm start options
-# Option 1 : warm start with A,B,D,d,E,H,c and G,H_re, A,B should be near zero since our model predicts the A,B part
+# Option 1 : warm start with A,B,D,d,E,H,c and G,H_re, A,B,d should be near zero since our model predicts the A,B part
 # vn_curr_theta = np.concatenate([A_init,B_init,D_init,d_init,E_init,H_init,G_init,H_re_init,c_init])
 
-# Option 2 : warm start with D,d,E,H,c and G,H_re only, fixe A,B to be zeros since we believe the normal dynamics model
+# Option 2 : warm start with D,d,E,H,c and G,H_re only, fixe A,B,d to be zeros since we believe the normal dynamics model
 # (robot properties from URDF) is nearly perfect
 vn_curr_theta = np.concatenate([D_init,E_init,H_init,G_init,H_re_init,c_init])
 
 # establish the VN learner (violation-based method)
 F_stiffness = 0.5
 gamma = 1e-1
-epsilon = 5e-2
+epsilon = 1e0
 # vn_learner = lcs_class_state_dep.LCS_VN(n_state=n_state, n_control=n_control, n_lam=n_lam, F_stiffness=F_stiffness)
 vn_learner = lcs_class_state_dep.LCS_VN(n_state=n_state, n_control=n_control, n_lam=n_lam, A=A_init_m, B=B_init_m,
                                         dyn_offset=d_init, F_stiffness=F_stiffness)
@@ -203,6 +206,7 @@ H_res = vn_learner.E_fn(vn_curr_theta)
 c_res = vn_learner.lcp_offset_fn(vn_curr_theta)
 
 
+# pdb.set_trace()
 # store as npy file for validation and visualization
 mdic_resdyn ={"A_res":A_res,"B_res":B_res,"D_res":D_res,"d_res":d_res,"E_res":E_res,"F_res":F_res,"H_res":H_res,"c_res":c_res}
 npz_file = 'data_state_dep/learned_res_dyn'

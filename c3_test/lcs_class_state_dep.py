@@ -239,7 +239,7 @@ class LCS_VN:
         dyn_loss = dot(dyn - x_next, dyn - x_next)
 
         # lcp loss
-        dist = (self.D + D_M) @ x + (self.E + E_M) @ u + self.F @ lam + self.lcp_offset
+        dist = (self.D + D_M) @ x + (self.E + E_M) @ u + (self.F + F_M) @ lam + (self.lcp_offset + lcp_offset_M)
         lcp_aug_loss = dot(lam, phi) + 1 / gamma * dot(phi - dist, phi - dist)
 
         # define loss function
@@ -310,6 +310,15 @@ class LCS_VN:
         lam_batch = lam_phi_batch[0:self.n_lam, :]
         phi_batch = lam_phi_batch[self.n_lam:, :]
         mu_batch = sol['lam_x'].full()
+        # for i in range(batch_size):
+        #     F_learnt = self.F_fn(current_theta)
+        #     F_state = batch_F[i]
+        #     F_check = F_learnt + F_state
+        #     # print(F_learnt)
+        #     # print(F_state)
+        #     print(min(np.linalg.eigvals(F_check+F_check.T)))
+        #     print(min(np.linalg.eigvals(F_state + F_state.T)))
+        # pdb.set_trace()
 
         # solve the gradient
         dtheta_batch, dyn_loss_batch, lcp_loss_batch, = self.loss_fn(data_batch.T, lam_phi_batch, mu_batch,

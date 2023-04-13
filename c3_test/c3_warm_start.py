@@ -113,7 +113,7 @@ vn_optimizier = opt.Adam()
 vn_optimizier.learning_rate = vn_learning_rate
 
 # training loop
-max_iter = 60
+max_iter = 50
 mini_batch_size = 50
 # vn_curr_theta = 0.01 * np.random.randn(vn_learner.n_theta)
 
