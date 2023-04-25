@@ -1,4 +1,4 @@
-import lcs_class_state_dep
+import lcs_class_state_dep_vel
 import lcs.optim as opt
 import numpy as np
 import scipy
@@ -26,32 +26,40 @@ F_list = []
 H_list = []
 c_list = []
 
+n_state = 19
+n_control = 3
+n_lam = 12
+n_vel = 9
+
 # load the data, should be improved in the futrue
 # 20 single push data, 99 data points per push
-for i in range(20):
+for i in range(100):
     # The state and input data
     log_num = "{:02}".format(i)
-    data_dir_xu = "/usr/rory-workspace/data/c3_learning/data_raw_wrong/State_Residual-{}.npz".format(log_num)
-    # data_dir_xu = "/usr/rory-workspace/data/c3_learning/data_raw/State_Residual-{}.npz".format(log_num)
+    data_dir_xu = "/usr/rory-workspace/data/c3_learning/data_new/State_Residual-{}.npz".format(log_num)
     data_train = np.load(data_dir_xu, allow_pickle=True)
     x_batch_raw = data_train['state_plant'][:-1,:]
     u_batch_raw = data_train['input'][:-1,:]
     res_batch_raw = data_train['residual']
+    res_batch_raw = res_batch_raw[:,n_state-n_vel:n_state]
     x_batch_list.append(x_batch_raw)
     u_batch_list.append(u_batch_raw)
     res_batch_list.append(res_batch_raw)
     # also load the model predicted next state and true next state
     x_next_model_AB_raw = data_train['state_model_AB'][:-1,:]
+    x_next_model_AB_raw = x_next_model_AB_raw[:,n_state-n_vel:n_state]
     x_model_AB_list.append(x_next_model_AB_raw)
     x_next_true_raw = data_train['state_plant'][1:,:]
+    x_next_true_raw = x_next_true_raw[:,n_state-n_vel:n_state]
     x_next_true_list.append(x_next_true_raw)
 
     # The system data
-    data_dir_lcs = "/usr/rory-workspace/data/c3_learning/data_raw_wrong/LCS_Matrices-{}.npz".format(log_num)
-    # data_dir_lcs = "/usr/rory-workspace/data/c3_learning/data_raw/LCS_Matrices-{}.npz".format(log_num)
+    data_dir_lcs = "/usr/rory-workspace/data/c3_learning/data_new/LCS_Matrices-{}.npz".format(log_num)
     data_lcs = np.load(data_dir_lcs, allow_pickle=True)
     D = data_lcs['D_lcs'][:-1]
+    D = D[:,n_state-n_vel:n_state]
     d = data_lcs['d_lcs'][:-1]
+    d = d[:,n_state-n_vel:n_state]
     E = data_lcs['E_lcs'][:-1]
     F = data_lcs['F_lcs'][:-1]
     H = data_lcs['H_lcs'][:-1]
@@ -71,10 +79,10 @@ res_batch = np.concatenate(res_batch_list,axis=0)
 x_model_AB = np.concatenate(x_model_AB_list,axis=0)
 x_next_true = np.concatenate(x_next_true_list,axis=0)
 
-A_batch = np.zeros((1980,19,19))
-B_batch = np.zeros((1980,19,3))
+A_batch = np.zeros((x_batch.shape[0],n_vel,n_state))
+B_batch = np.zeros((x_batch.shape[0],n_vel,n_control))
 D_batch = np.concatenate(D_list,axis=0)
-d_batch = np.zeros((1980,19))
+d_batch = np.zeros((x_batch.shape[0],n_vel))
 E_batch = np.concatenate(E_list,axis=0)
 F_batch = np.concatenate(F_list,axis=0)
 H_batch = np.concatenate(H_list,axis=0)
@@ -82,41 +90,62 @@ c_batch = np.concatenate(c_list,axis=0)
 
 
 # import matplotlib.pyplot as plt
-# # briefly check the result
-# # ball position and velocity
+# # # briefly check the result
+# # # ball position and velocity
+# # plt.figure(figsize = (24,16))
+# # plt.plot(res_batch[:100,7]*100, label='x position residual')
+# # plt.ylabel("position (cm/s)", fontsize=20)
+# # plt.xlabel("timestep k (every 0.1s)", fontsize=20)
+# # plt.legend(fontsize=20)
+# # plt.xticks(size = 20)
+# # plt.yticks(size = 20)
+# #
 # plt.figure(figsize = (24,16))
-# # plt.plot(x_batch[:,16]*100, label='x velocity actual')
-# plt.plot(res_batch[:,4]*100, label='x velocity residual')
+# plt.plot(res_batch[:100,16]*100, label='x velocity residual')
 # plt.ylabel("velocity (cm/s)", fontsize=20)
-# plt.xlabel("timestep k (every 0.01s)", fontsize=20)
+# plt.xlabel("timestep k (every 0.1s)", fontsize=20)
 # plt.legend(fontsize=20)
 # plt.xticks(size = 20)
 # plt.yticks(size = 20)
 # plt.show()
 #
+# plt.figure(figsize = (24,16))
+# plt.plot(x_model_AB[:100,7]*100, label='x position model')
+# plt.plot(x_next_true[:100,7]*100, label='x position actual')
+# plt.ylabel("position (cm)", fontsize=20)
+# plt.xlabel("timestep k (every 0.1s)", fontsize=20)
+# plt.legend(fontsize=20)
+# plt.xticks(size = 20)
+# plt.yticks(size = 20)
+
+# plt.figure(figsize = (24,16))
+# plt.plot(x_model_AB[:100,16]*100, label='x velocity model')
+# plt.plot(x_next_true[:100,16]*100, label='x velocity actual')
+# plt.ylabel("velocity (cm/s)", fontsize=20)
+# plt.xlabel("timestep k (every 0.1s)", fontsize=20)
+# plt.legend(fontsize=20)
+# plt.xticks(size = 20)
+# plt.yticks(size = 20)
+# plt.show()
+
 # pdb.set_trace()
 
 ############################################## setting learner #########################################################
 # system parameters
-n_state = 19
-n_control = 3
-n_lam = 12
 training_data_size = x_batch.shape[0]
 
 # warm start options
-lcs_init = np.load("/usr/rory-workspace/data/c3_learning/data_raw_wrong/LCS_Matrices-00.npz", allow_pickle=True)
-# lcs_init = np.load("/usr/rory-workspace/data/c3_learning/data_raw/LCS_Matrices-00.npz", allow_pickle=True)
-# lcs_init = np.load("data_raw/LCS_Matrices-00.npz", allow_pickle=True)
-A_init = np.zeros(n_state * n_state)
-A_init_m = np.zeros((n_state,n_state))
-B_init = np.zeros(n_state * n_control)
-B_init_m = np.zeros((n_state,n_control))
-D_init = np.zeros_like(lcs_init['D_lcs'][0].flatten('F'))
-d_init = np.zeros(n_state)
-E_init = np.zeros_like(lcs_init['E_lcs'][0].flatten('F'))
-F_init = lcs_init['F_lcs'][0].flatten('F')
-H_init = np.zeros_like(lcs_init['H_lcs'][0].flatten('F'))
-c_init = np.zeros_like(lcs_init['c_lcs'][0].flatten('F'))
+lcs_init = np.load("/usr/rory-workspace/data/c3_learning/data_new/LCS_Matrices-00.npz", allow_pickle=True)
+A_init = np.zeros(n_vel * n_state)
+A_init_m = np.zeros((n_vel,n_state))
+B_init = np.zeros(n_vel * n_control)
+B_init_m = np.zeros((n_vel,n_control))
+D_init = np.zeros(n_vel * n_lam)
+d_init = np.zeros(n_vel)
+E_init = np.zeros(n_lam * n_state)
+F_init = np.zeros(n_lam * n_lam)
+H_init = np.zeros(n_lam * n_control)
+c_init = np.zeros(n_lam)
 
 # reparameterization part F divided into G and H_re
 # F_init_m = lcs_init['F_lcs'][0] + 0.5 * np.eye(n_lam,n_lam) # force F to be positive definite
@@ -143,18 +172,18 @@ vn_curr_theta = np.concatenate([D_init,E_init,H_init,G_init,S_init,c_init])
 F_stiffness = 0.5
 gamma = 1e-1
 epsilon = 1e0
-# vn_learner = lcs_class_state_dep.LCS_VN(n_state=n_state, n_control=n_control, n_lam=n_lam, F_stiffness=F_stiffness)
-vn_learner = lcs_class_state_dep.LCS_VN(n_state=n_state, n_control=n_control, n_lam=n_lam, A=A_init_m, B=B_init_m,
+# vn_learner = lcs_class_state_dep_vel.LCS_VN(n_state=n_state, n_control=n_control, n_lam=n_lam, F_stiffness=F_stiffness)
+vn_learner = lcs_class_state_dep_vel.LCS_VN(n_state=n_state, n_control=n_control, n_lam=n_lam, n_vel=n_vel, A=A_init_m, B=B_init_m,
                                         dyn_offset=d_init, F_stiffness=F_stiffness)
 vn_learner.diff(gamma=gamma, epsilon=epsilon, w_D=1e-6, D_ref=0, w_F=0e-6, F_ref=0)
 
 # establish the optimizer
-vn_learning_rate = 0.1e-3
+vn_learning_rate = 0.5e-3
 vn_optimizier = opt.Adam()
 vn_optimizier.learning_rate = vn_learning_rate
 
 # training loop
-max_iter = 50
+max_iter = 60
 mini_batch_size = 50
 # vn_curr_theta = 0.01 * np.random.randn(vn_learner.n_theta)
 
@@ -173,13 +202,13 @@ for iter in range(max_iter):
 
         # horizontally concatenate the matrices (batchsize,m,n) -> (m, batchsize*n)
         A_mini_batch = A_batch[shuffle_index]
-        A_mini_batch = A_mini_batch.swapaxes(0, 1).reshape(n_state, -1)
+        A_mini_batch = A_mini_batch.swapaxes(0, 1).reshape(n_vel, -1)
 
         B_mini_batch = B_batch[shuffle_index]
-        B_mini_batch = B_mini_batch.swapaxes(0, 1).reshape(n_state, -1)
+        B_mini_batch = B_mini_batch.swapaxes(0, 1).reshape(n_vel, -1)
 
         D_mini_batch = D_batch[shuffle_index]
-        D_mini_batch = D_mini_batch.swapaxes(0, 1).reshape(n_state, -1)
+        D_mini_batch = D_mini_batch.swapaxes(0, 1).reshape(n_vel, -1)
 
         d_mini_batch = d_batch[shuffle_index]
         d_mini_batch = d_mini_batch.T
@@ -197,8 +226,7 @@ for iter in range(max_iter):
         c_mini_batch = c_mini_batch.T
         # end_data_time = time.time()
         # print("Data_time: " + str(end_data_time - start_data_time))
-
-        # do one step for VN, note the difference of notation in two papers
+        # do one step for VN
         vn_mean_loss, vn_dtheta, vn_dyn_loss, vn_lcp_loss, _ = vn_learner.step(batch_x=x_mini_batch,
             batch_u=u_mini_batch, batch_x_next=res_mini_batch, current_theta=vn_curr_theta, batch_A=A_mini_batch,
             batch_B=B_mini_batch, batch_D=D_mini_batch, batch_dynamic_offset=d_mini_batch, batch_E=E_mini_batch,
@@ -230,40 +258,29 @@ S_res = vn_learner.S_fn(vn_curr_theta)
 # store as npy file for validation and visualization
 mdic_resdyn ={"A_res":A_res,"B_res":B_res,"D_res":D_res,"d_res":d_res,"E_res":E_res,"F_res":F_res,"H_res":H_res,"c_res":
     c_res,"G_res": G_res, "S_res":S_res}
-npz_file = 'data_state_dep_wrong/learned_res_dyn'
+npz_file = 'data_velocity/learned_res_dyn'
 # npz_file = 'data_state_dep/learned_res_dyn'
 np.savez(npz_file, **mdic_resdyn)
 
 
 # store as seperate csv file for each matrices, integrating into c++ for sanity check
-np.savetxt('data_state_dep_wrong/A_res.csv', A_res, delimiter=',')
-np.savetxt('data_state_dep_wrong/B_res.csv', B_res, delimiter=',')
-np.savetxt('data_state_dep_wrong/D_res.csv', D_res, delimiter=',')
-np.savetxt('data_state_dep_wrong/d_res.csv', d_res, delimiter=',')
-np.savetxt('data_state_dep_wrong/E_res.csv', E_res, delimiter=',')
-np.savetxt('data_state_dep_wrong/F_res.csv', F_res, delimiter=',')
-np.savetxt('data_state_dep_wrong/H_res.csv', H_res, delimiter=',')
-np.savetxt('data_state_dep_wrong/c_res.csv', c_res, delimiter=',')
+np.savetxt('data_velocity/A_res.csv', A_res, delimiter=',')
+np.savetxt('data_velocity/B_res.csv', B_res, delimiter=',')
+np.savetxt('data_velocity/D_res.csv', D_res, delimiter=',')
+np.savetxt('data_velocity/d_res.csv', d_res, delimiter=',')
+np.savetxt('data_velocity/E_res.csv', E_res, delimiter=',')
+np.savetxt('data_velocity/F_res.csv', F_res, delimiter=',')
+np.savetxt('data_velocity/H_res.csv', H_res, delimiter=',')
+np.savetxt('data_velocity/c_res.csv', c_res, delimiter=',')
 # also record the factorized part
-np.savetxt('data_state_dep_wrong/G_res.csv', G_res, delimiter=',')
-np.savetxt('data_state_dep_wrong/S_res.csv', S_res, delimiter=',')
+np.savetxt('data_velocity/G_res.csv', G_res, delimiter=',')
+np.savetxt('data_velocity/S_res.csv', S_res, delimiter=',')
 
-# np.savetxt('data_state_dep/A_res.csv', A_res, delimiter=',')
-# np.savetxt('data_state_dep/B_res.csv', B_res, delimiter=',')
-# np.savetxt('data_state_dep/D_res.csv', D_res, delimiter=',')
-# np.savetxt('data_state_dep/d_res.csv', d_res, delimiter=',')
-# np.savetxt('data_state_dep/E_res.csv', E_res, delimiter=',')
-# np.savetxt('data_state_dep/F_res.csv', F_res, delimiter=',')
-# np.savetxt('data_state_dep/H_res.csv', H_res, delimiter=',')
-# np.savetxt('data_state_dep/c_res.csv', c_res, delimiter=',')
-# # also record the factorized part
-# np.savetxt('data_state_dep/G_res.csv', G_res, delimiter=',')
-# np.savetxt('data_state_dep/S_res.csv', S_res, delimiter=',')
 
 
 ################################# Validate the correctness of the learned dynamics #####################################
 # load the result
-res_dyn = np.load('data_state_dep_wrong/learned_res_dyn.npz', allow_pickle=True)
+res_dyn = np.load('data_velocity/learned_res_dyn.npz', allow_pickle=True)
 # res_dyn = np.load('data_state_dep/learned_res_dyn.npz', allow_pickle=True)
 A_res = res_dyn['A_res']
 B_res = res_dyn['B_res']
@@ -276,13 +293,13 @@ F_res = res_dyn['F_res']
 H_res = res_dyn['H_res']
 c_res = res_dyn['c_res']
 
-lcs_expert = lcs_class_state_dep.LCS_Gen(n_state=n_state, n_control=n_control, n_lam=n_lam,
+lcs_expert = lcs_class_state_dep_vel.LCS_Gen(n_state=n_state, n_control=n_control, n_lam=n_lam, n_vel=n_vel,
                          A=A_res, B=B_res, D=D_res, dyn_offset=d_res,
                          E=E_res, H=H_res, F=F_res, lcp_offset=c_res)
 
-A_batch = A_batch.swapaxes(0, 1).reshape(n_state, -1)
-B_batch = B_batch.swapaxes(0, 1).reshape(n_state, -1)
-D_batch = D_batch.swapaxes(0, 1).reshape(n_state, -1)
+A_batch = A_batch.swapaxes(0, 1).reshape(n_vel, -1)
+B_batch = B_batch.swapaxes(0, 1).reshape(n_vel, -1)
+D_batch = D_batch.swapaxes(0, 1).reshape(n_vel, -1)
 d_batch = d_batch.T
 E_batch = E_batch.swapaxes(0, 1).reshape(n_lam, -1)
 H_batch = H_batch.swapaxes(0, 1).reshape(n_lam, -1)
@@ -300,20 +317,60 @@ import matplotlib.pyplot as plt
 # briefly check the result
 # ball position and velocity
 plt.figure(figsize = (24,16))
-plt.plot(res_batch[:,17]*100, label='x velocity residual')
-plt.plot(res_learned[:,17]*100, label='x velocity residual learned')
+plt.plot(res_batch[:,6]*100, label='x velocity residual')
+plt.plot(res_learned[:,6]*100, label='x velocity residual learned')
 # plt.plot(res_new[:,17]*100, label='x velocity residual after compensation')
 plt.ylabel("velocity (cm/s)", fontsize=20)
-plt.xlabel("timestep k (every 0.01s)", fontsize=20)
+plt.xlabel("timestep k (every 0.1s)", fontsize=20)
 plt.legend(fontsize=20)
 plt.xticks(size = 20)
 plt.yticks(size = 20)
 plt.show()
 
 plt.figure(figsize = (24,16))
-plt.plot((res_batch[1:,17]-res_batch[0:-1,17])*100, label='collected')
-plt.plot((res_learned[1:,17]-res_learned[0:-1,17])*100, label='learned')
-plt.xlabel("timestep k (every 0.01s)", fontsize=20)
+plt.plot((res_batch[1:,6]-res_batch[0:-1,6])*100, label='collected')
+plt.plot((res_learned[1:,6]-res_learned[0:-1,6])*100, label='learned')
+plt.xlabel("timestep k (every 0.1s)", fontsize=20)
+plt.legend(fontsize=20)
+plt.xticks(size = 20)
+plt.yticks(size = 20)
+plt.show()
+
+plt.figure(figsize = (24,16))
+plt.plot(res_batch[:,7]*100, label='y velocity residual')
+plt.plot(res_learned[:,7]*100, label='y velocity residual learned')
+# plt.plot(res_new[:,17]*100, label='x velocity residual after compensation')
+plt.ylabel("velocity (cm/s)", fontsize=20)
+plt.xlabel("timestep k (every 0.1s)", fontsize=20)
+plt.legend(fontsize=20)
+plt.xticks(size = 20)
+plt.yticks(size = 20)
+plt.show()
+
+plt.figure(figsize = (24,16))
+plt.plot((res_batch[1:,7]-res_batch[0:-1,7])*100, label='collected')
+plt.plot((res_learned[1:,7]-res_learned[0:-1,7])*100, label='learned')
+plt.xlabel("timestep k (every 0.1s)", fontsize=20)
+plt.legend(fontsize=20)
+plt.xticks(size = 20)
+plt.yticks(size = 20)
+plt.show()
+
+plt.figure(figsize = (24,16))
+plt.plot(res_batch[:,8]*100, label='z velocity residual')
+plt.plot(res_learned[:,8]*100, label='z velocity residual learned')
+# plt.plot(res_new[:,17]*100, label='x velocity residual after compensation')
+plt.ylabel("velocity (cm/s)", fontsize=20)
+plt.xlabel("timestep k (every 0.1s)", fontsize=20)
+plt.legend(fontsize=20)
+plt.xticks(size = 20)
+plt.yticks(size = 20)
+plt.show()
+
+plt.figure(figsize = (24,16))
+plt.plot((res_batch[1:,8]-res_batch[0:-1,8])*100, label='collected')
+plt.plot((res_learned[1:,8]-res_learned[0:-1,8])*100, label='learned')
+plt.xlabel("timestep k (every 0.1s)", fontsize=20)
 plt.legend(fontsize=20)
 plt.xticks(size = 20)
 plt.yticks(size = 20)

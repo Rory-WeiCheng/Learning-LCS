@@ -10,11 +10,12 @@ import matplotlib.pyplot as plt
 # 2023.4.24 fix the notation issue, follow Alp's work
 class LCS_Gen:
 
-    def __init__(self, n_state, n_control, n_lam, A=None, B=None, D=None, dyn_offset=None,
+    def __init__(self, n_state, n_control, n_lam, n_vel, A=None, B=None, D=None, dyn_offset=None,
                  E=None, H=None, F=None, lcp_offset=None):
         self.n_state = n_state
         self.n_control = n_control
         self.n_lam = n_lam
+        self.n_vel = n_vel
 
         self.A = DM(A)
         self.B = DM(B)
@@ -30,17 +31,17 @@ class LCS_Gen:
         u = SX.sym('u', self.n_control)
         xu_pair = vertcat(x, u)
         lam = SX.sym('lam', self.n_lam)
-        x_next = SX.sym('x_next', self.n_state)
+        x_next = SX.sym('x_next', self.n_vel)
 
         # define the model system matrices, M stands for model
         Model_para = []
-        A_M = SX.sym('A_M', self.n_state, self.n_state)
+        A_M = SX.sym('A_M', self.n_vel, self.n_state)
         Model_para+= [vec(A_M)]
-        B_M = SX.sym('B_M', self.n_state, self.n_control)
+        B_M = SX.sym('B_M', self.n_vel, self.n_control)
         Model_para += [vec(B_M)]
-        D_M = SX.sym('D_M', self.n_state, self.n_lam)
+        D_M = SX.sym('D_M', self.n_vel, self.n_lam)
         Model_para += [vec(D_M)]
-        dyn_offset_M = SX.sym('dyn_offset_M', self.n_state)
+        dyn_offset_M = SX.sym('dyn_offset_M', self.n_vel)
         Model_para += [vec(dyn_offset_M)]
         E_M = SX.sym('E_M', self.n_lam, self.n_state)
         Model_para += [vec(E_M)]
@@ -91,6 +92,7 @@ class LCS_Gen:
         #     theta_M_list.append(theta_Mi)
         #     # print(lcp_offset_Mi + self.lcp_offset)
         # theta_M_batch = np.stack(theta_M_list,axis=1).T
+
         theta_M_batch = self.Form_theta_M(batch_A, batch_B, batch_D, batch_dynamic_offset, batch_E, batch_H, batch_F,
                                           batch_lcp_offset).full().T
         xu_theta_batch = np.hstack((x_batch, u_batch, theta_M_batch))
@@ -114,34 +116,35 @@ class LCS_Gen:
 # 2023.4.24 fix the notation issue, follow Alp's work
 class LCS_VN:
 
-    def __init__(self, n_state, n_control, n_lam, A=None, B=None, D=None, dyn_offset=None,
+    def __init__(self, n_state, n_control, n_lam, n_vel, A=None, B=None, D=None, dyn_offset=None,
                  E=None, H=None, G_para=None, S=None, lcp_offset=None, F_stiffness=1.0):
         self.n_state = n_state
         self.n_control = n_control
         self.n_lam = n_lam
+        self.n_vel = n_vel
 
         # define system matrices
         self.tunable_para = []
         if A is None:
-            self.A = SX.sym('A', n_state, n_state)
+            self.A = SX.sym('A', n_vel, n_state)
             self.tunable_para += [vec(self.A)]
         else:
             self.A = DM(A)
 
         if B is None:
-            self.B = SX.sym('B', n_state, n_control)
+            self.B = SX.sym('B', n_vel, n_control)
             self.tunable_para += [vec(self.B)]
         else:
             self.B = DM(B)
 
         if D is None:
-            self.D = SX.sym('D', n_state, n_lam)
+            self.D = SX.sym('D', n_vel, n_lam)
             self.tunable_para += [vec(self.D)]
         else:
             self.D = DM(D)
 
         if dyn_offset is None:
-            self.dyn_offset = SX.sym('dyn_offset', n_state)
+            self.dyn_offset = SX.sym('dyn_offset', n_vel)
             self.tunable_para += [vec(self.dyn_offset)]
         else:
             self.dyn_offset = DM(dyn_offset)
@@ -196,6 +199,7 @@ class LCS_VN:
 
         self.F_fn = Function('F_fn', [self.theta], [self.F])
 
+
     def toMatG(self, G_para):
 
         if type(G_para) is casadi.SX:
@@ -216,17 +220,17 @@ class LCS_VN:
         # define the system variable
         x = SX.sym('x', self.n_state)
         u = SX.sym('u', self.n_control)
-        x_next = SX.sym('x_next', self.n_state)
+        x_next = SX.sym('x_next', self.n_vel)
 
         # define the model system matrices, M stands for model
         Model_para = []
-        A_M = SX.sym('A_M', self.n_state, self.n_state)
+        A_M = SX.sym('A_M', self.n_vel, self.n_state)
         Model_para+= [vec(A_M)]
-        B_M = SX.sym('B_M', self.n_state, self.n_control)
+        B_M = SX.sym('B_M', self.n_vel, self.n_control)
         Model_para += [vec(B_M)]
-        D_M = SX.sym('D_M', self.n_state, self.n_lam)
+        D_M = SX.sym('D_M', self.n_vel, self.n_lam)
         Model_para += [vec(D_M)]
-        dyn_offset_M = SX.sym('dyn_offset_M', self.n_state)
+        dyn_offset_M = SX.sym('dyn_offset_M', self.n_vel)
         Model_para += [vec(dyn_offset_M)]
 
         E_M = SX.sym('E_M', self.n_lam, self.n_state)
@@ -241,8 +245,7 @@ class LCS_VN:
         # vectorize the matrices to be theta_M
         theta_M = vcat(Model_para)
         # define model parameter formation function
-        self.Form_theta_M = Function('Form_theta_M', [A_M, B_M, D_M, dyn_offset_M, E_M, H_M, F_M, lcp_offset_M],
-                                     [theta_M])
+        self.Form_theta_M = Function('Form_theta_M', [A_M, B_M, D_M, dyn_offset_M, E_M, H_M, F_M, lcp_offset_M], [theta_M])
         n_theta_M = theta_M.numel()
 
         data_pair = vertcat(x, u, x_next)
@@ -291,8 +294,8 @@ class LCS_VN:
         pred_g = vertcat(lam, phi)
         pred_quadprog = {'x': pred_x, 'f': pred_loss, 'g': pred_g, 'p': pred_xu_theta}
         opts = {'print_time': 0, 'osqp': {'verbose': False}}
-        self.pred_qpSolver = qpsol('pred_qpSolver', 'osqp', pred_quadprog, opts)
-        self.pred_error_fn = Function('pred_error_fn', [x, x_next], [dot(x - x_next, x - x_next)])
+        # self.pred_qpSolver = qpsol('pred_qpSolver', 'osqp', pred_quadprog, opts)
+        # self.pred_error_fn = Function('pred_error_fn', [x, x_next], [dot(x - x_next, x - x_next)])
 
     def step(self, batch_x, batch_u, batch_x_next, current_theta, batch_A, batch_B, batch_D, batch_dynamic_offset,
              batch_E, batch_H, batch_F, batch_lcp_offset):
@@ -318,8 +321,8 @@ class LCS_VN:
         #     theta_M_list.append(theta_Mi)
         # theta_M_batch = np.stack(theta_M_list,axis=1).T
 
-        theta_M_batch = self.Form_theta_M(batch_A, batch_B, batch_D, batch_dynamic_offset, batch_E, batch_H, batch_F,
-                                          batch_lcp_offset).full().T
+        theta_M_batch = self.Form_theta_M(batch_A,batch_B,batch_D,batch_dynamic_offset,batch_E,batch_H,batch_F,batch_lcp_offset).full().T
+        # pdb.set_trace()
 
         # Assemble data (x,u,x_next) and theta (learnt + data input)
         data_theta_batch = np.hstack((batch_x, batch_u, batch_x_next, theta_batch, theta_M_batch))
@@ -328,7 +331,7 @@ class LCS_VN:
         # start_QP_time = time.time()
         sol = self.qpSolver(lbx=0., p=data_theta_batch.T)
         # end_QP_time = time.time()
-        # print("QP_time: " + str(end_QP_time - start_QP_time))
+        # print("QP_time: " + str(end_QP_time-start_QP_time))
         loss_batch = sol['f'].full()
         lam_phi_batch = sol['x'].full()
         lam_batch = lam_phi_batch[0:self.n_lam, :]
@@ -347,7 +350,7 @@ class LCS_VN:
         # solve the gradient
         # start_gradient_time = time.time()
         dtheta_batch, dyn_loss_batch, lcp_loss_batch, = self.loss_fn(data_batch.T, lam_phi_batch, mu_batch,
-                                                                     current_theta,theta_M_batch.T)
+                                                                     current_theta, theta_M_batch.T)
         # end_gradient_time = time.time()
         # print("Gradient_time: " + str(end_gradient_time - start_gradient_time))
 

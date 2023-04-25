@@ -6,7 +6,7 @@ import time
 import pdb
 
 # Modified from Wainxin's original code, a rough test for learning LCS for C3
-st = time.time()
+start_time = time.time()
 
 ################################################# load data ############################################################
 # x_batch: (num_data, num_state)
@@ -24,7 +24,7 @@ x_next_true_list = []
 for i in range(20):
     # The state and input data
     log_num = "{:02}".format(i)
-    data_dir_xu = "data_raw/State_Residual-{}.npz".format(log_num)
+    data_dir_xu = "/usr/rory-workspace/data/c3_learning/data_raw/State_Residual-{}.npz".format(log_num)
     data_train = np.load(data_dir_xu, allow_pickle=True)
     # Lcs_plant = np.load('data_raw/LCS_Matrices-01.npz', allow_pickle=True)
     x_batch_raw = data_train['state_plant'][:-1,:]
@@ -67,7 +67,7 @@ n_control = 3
 n_lam = 12
 training_data_size = x_batch.shape[0]
 
-lcs_init = np.load("data_raw/LCS_Matrices-00.npz", allow_pickle=True)
+lcs_init = np.load("/usr/rory-workspace/data/c3_learning/data_raw/LCS_Matrices-00.npz", allow_pickle=True)
 A_init = np.zeros(n_state * n_state)
 A_init_m = np.zeros((n_state,n_state))
 B_init = np.zeros(n_state * n_control)
@@ -82,7 +82,7 @@ H_init = lcs_init['H_lcs'][0].flatten('F')
 c_init = lcs_init['c_lcs'][0].flatten('F')
 
 # reparameterization part F divided into G and H_re
-F_init_m = lcs_init['F_lcs'][0] + 0.5 * np.eye(n_lam,n_lam) # force F to be positive definite
+F_init_m = lcs_init['F_lcs'][0] + 0.5 * np.eye(n_lam,n_lam) # force F (actually F+ F') to be positive definite
 G_init = np.linalg.cholesky((F_init_m+F_init_m.T)/2).T
 G_init_list = []
 for j in range(G_init.shape[1]):
@@ -124,10 +124,13 @@ for iter in range(max_iter):
 
     for batch in range(int(np.floor(training_data_size / mini_batch_size))):
         # mini_batch_size
+        # start_data_time = time.time()
         shuffle_index = all_indices[batch * mini_batch_size:(batch + 1) * mini_batch_size]
         x_mini_batch = x_batch[shuffle_index]
         u_mini_batch = u_batch[shuffle_index]
         res_mini_batch = res_batch[shuffle_index]
+        # end_data_time = time.time()
+        # print("Data_time: " + str(end_data_time - start_data_time))
 
         # do one step for VN
         vn_mean_loss, vn_dtheta, vn_dyn_loss, vn_lcp_loss, _ = vn_learner.step(batch_x=x_mini_batch,
@@ -137,6 +140,10 @@ for iter in range(max_iter):
         vn_curr_theta = vn_optimizier.step(vn_curr_theta, vn_dtheta)
 
     print('iter:', iter, 'vn_loss: ', vn_mean_loss)
+
+end_time = time.time()
+time_spent = end_time-start_time
+print(time_spent)
 
 
 ############################################### get and save results ###################################################
@@ -150,9 +157,12 @@ E_res = vn_learner.D_fn(vn_curr_theta)
 F_res = vn_learner.F_fn(vn_curr_theta)
 H_res = vn_learner.E_fn(vn_curr_theta)
 c_res = vn_learner.lcp_offset_fn(vn_curr_theta)
+G_res = vn_learner.G_fn(vn_curr_theta)
+H_f_res = vn_learner.H_fn(vn_curr_theta)
 
 # store as npy file for validation and visualization
-mdic_resdyn ={"A_res":A_res,"B_res":B_res,"D_res":D_res,"d_res":d_res,"E_res":E_res,"F_res":F_res,"H_res":H_res,"c_res":c_res}
+mdic_resdyn ={"A_res":A_res,"B_res":B_res,"D_res":D_res,"d_res":d_res,"E_res":E_res,"F_res":F_res,"H_res":H_res,
+              "c_res":c_res,"G_res": G_res, "H_f_res":H_f_res}
 npz_file = 'data_learnt_warm_start/learned_res_dyn'
 np.savez(npz_file, **mdic_resdyn)
 
@@ -165,6 +175,9 @@ np.savetxt('data_learnt_warm_start/E_res.csv', E_res, delimiter=',')
 np.savetxt('data_learnt_warm_start/F_res.csv', F_res, delimiter=',')
 np.savetxt('data_learnt_warm_start/H_res.csv', H_res, delimiter=',')
 np.savetxt('data_learnt_warm_start/c_res.csv', c_res, delimiter=',')
+# also record the factorized part
+np.savetxt('data_learnt_warm_start/G_res.csv', G_res, delimiter=',')
+np.savetxt('data_learnt_warm_start/H_f_res.csv', H_f_res, delimiter=',')
 
 ################################# Validate the correctness of the learned dynamics #####################################
 # load the result
