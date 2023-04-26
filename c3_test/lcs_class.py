@@ -202,7 +202,7 @@ class LCS_VN:
                         w_C * dot(vec(DM(C_ref)) - vec(self.C), vec(DM(C_ref)) - vec(self.C)) + \
                         w_F * dot(vec(DM(F_ref)) - vec(self.F), vec(DM(F_ref)) - vec(self.F))
         self.loss_fn = Function('loss_fn', [data_pair, lam_phi, mu, self.theta],
-                                [jacobian(L, self.theta).T, dyn_loss_plus, lcp_aug_loss])
+                                [jacobian(L, self.theta).T , dyn_loss_plus, lcp_aug_loss])
 
         # define the dyn prediction
         pred_xu_theta = vertcat(x, u, self.theta)

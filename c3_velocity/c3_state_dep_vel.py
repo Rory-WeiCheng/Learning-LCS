@@ -156,25 +156,47 @@ c_init = np.zeros(n_lam)
 #     G_init_list.append(G_init[0:j+1,j])
 # G_init = np.concatenate(G_init_list)
 # H_re_init = 0.5 * F_init_m.flatten('F')
-
 G_init = np.zeros(int((n_lam + 1) * n_lam / 2)).flatten('F')
 S_init = np.zeros((n_lam,n_lam)).flatten('F')
 
 # There are two warm start options
 # Option 1 : warm start with A,B,D,d,E,H,c and G,H_re, A,B,d should be near zero since our model predicts the A,B part
 # vn_curr_theta = np.concatenate([A_init,B_init,D_init,d_init,E_init,H_init,G_init,S_init,c_init])
-
 # Option 2 : warm start with D,d,E,H,c and G,H_re only, fixe A,B,d to be zeros since we believe the normal dynamics model
 # (robot properties from URDF) is nearly perfect
 vn_curr_theta = np.concatenate([D_init,E_init,H_init,G_init,S_init,c_init])
 
-# establish the VN learner (violation-based method)
+# Structure Options
+# imposing the structure we want to learning, give the pre-defined matrix masks, 0 for entries want to fix, 1 for entries need to learnt
+A_mask = np.ones((n_vel, n_state))
+B_mask = np.ones((n_vel, n_control))
+
+D_mask = np.ones((n_vel, n_lam))
+D_mask[:,0:2] = np.zeros((n_vel, 2))
+
+d_mask = np.ones((n_vel, n_lam))
+E_mask = np.ones((n_lam, n_state))
+E_mask[0:2,:] = np.zeros((2, n_state))
+
+H_mask = np.ones((n_lam, n_control))
+H_mask[0:2,:] = np.zeros((2, n_control))
+
+c_mask = np.ones(n_lam)
+c_mask[0:2] = np.zeros(2)
+
+# need to think carefully later about this part
+G_mask = np.ones(int((n_lam + 1) * n_lam / 2))
+S_mask = np.ones((n_lam,n_lam))
+
+
+# establish the violation-based learner
 F_stiffness = 0.5
 gamma = 1e-1
 epsilon = 1e0
 # vn_learner = lcs_class_state_dep_vel.LCS_VN(n_state=n_state, n_control=n_control, n_lam=n_lam, F_stiffness=F_stiffness)
 vn_learner = lcs_class_state_dep_vel.LCS_VN(n_state=n_state, n_control=n_control, n_lam=n_lam, n_vel=n_vel, A=A_init_m, B=B_init_m,
-                                        dyn_offset=d_init, F_stiffness=F_stiffness)
+                                        dyn_offset=d_init, F_stiffness=F_stiffness, A_mask=None, B_mask=None, D_mask=D_mask,
+                                        dyn_offset_mask=None, E_mask=E_mask, H_mask=H_mask, G_mask=G_mask, S_mask=S_mask, lcp_offset_mask=c_mask)
 vn_learner.diff(gamma=gamma, epsilon=epsilon, w_D=1e-6, D_ref=0, w_F=0e-6, F_ref=0)
 
 # establish the optimizer
@@ -186,6 +208,7 @@ vn_optimizier.learning_rate = vn_learning_rate
 max_iter = 60
 mini_batch_size = 50
 # vn_curr_theta = 0.01 * np.random.randn(vn_learner.n_theta)
+
 
 ############################################### start learning #########################################################
 for iter in range(max_iter):
@@ -259,7 +282,6 @@ S_res = vn_learner.S_fn(vn_curr_theta)
 mdic_resdyn ={"A_res":A_res,"B_res":B_res,"D_res":D_res,"d_res":d_res,"E_res":E_res,"F_res":F_res,"H_res":H_res,"c_res":
     c_res,"G_res": G_res, "S_res":S_res}
 npz_file = 'data_velocity/learned_res_dyn'
-# npz_file = 'data_state_dep/learned_res_dyn'
 np.savez(npz_file, **mdic_resdyn)
 
 
@@ -281,7 +303,6 @@ np.savetxt('data_velocity/S_res.csv', S_res, delimiter=',')
 ################################# Validate the correctness of the learned dynamics #####################################
 # load the result
 res_dyn = np.load('data_velocity/learned_res_dyn.npz', allow_pickle=True)
-# res_dyn = np.load('data_state_dep/learned_res_dyn.npz', allow_pickle=True)
 A_res = res_dyn['A_res']
 B_res = res_dyn['B_res']
 # note the notation difference between the two papers

@@ -78,20 +78,6 @@ class LCS_Gen:
              batch_E, batch_H, batch_F, batch_lcp_offset):
 
         batch_size = x_batch.shape[0]
-        # theta_M_list = []
-        # for i in range(batch_size):
-        #     A_Mi = batch_A[i].flatten('F')
-        #     B_Mi = batch_B[i].flatten('F')
-        #     D_Mi = batch_D[i].flatten('F')
-        #     dynamic_offset_Mi = batch_dynamic_offset[i]
-        #     E_Mi = batch_E[i].flatten('F')
-        #     H_Mi = batch_H[i].flatten('F')
-        #     F_Mi = batch_F[i].flatten('F')
-        #     lcp_offset_Mi = batch_lcp_offset[i]
-        #     theta_Mi = np.concatenate([A_Mi, B_Mi, D_Mi, dynamic_offset_Mi, E_Mi, H_Mi, F_Mi, lcp_offset_Mi])
-        #     theta_M_list.append(theta_Mi)
-        #     # print(lcp_offset_Mi + self.lcp_offset)
-        # theta_M_batch = np.stack(theta_M_list,axis=1).T
 
         theta_M_batch = self.Form_theta_M(batch_A, batch_B, batch_D, batch_dynamic_offset, batch_E, batch_H, batch_F,
                                           batch_lcp_offset).full().T
@@ -117,7 +103,9 @@ class LCS_Gen:
 class LCS_VN:
 
     def __init__(self, n_state, n_control, n_lam, n_vel, A=None, B=None, D=None, dyn_offset=None,
-                 E=None, H=None, G_para=None, S=None, lcp_offset=None, F_stiffness=1.0):
+                 E=None, H=None, G_para=None, S=None, lcp_offset=None, F_stiffness=1.0, A_mask=None,
+                 B_mask=None, D_mask=None, dyn_offset_mask=None, E_mask=None, H_mask=None, G_mask=None,
+                 S_mask=None, lcp_offset_mask=None):
         self.n_state = n_state
         self.n_control = n_control
         self.n_lam = n_lam
@@ -199,6 +187,43 @@ class LCS_VN:
 
         self.F_fn = Function('F_fn', [self.theta], [self.F])
 
+        # define the mask matrices to impose the structure on the learnt matrices
+        # notice the order should be consistent with the parameter definition above
+        self.mask_para = []
+        if A_mask is not None:
+            self.A_mask = DM(A_mask)
+            self.mask_para += [vec(self.A_mask)]
+        if B_mask is not None:
+            self.B_mask = DM(B_mask)
+            self.mask_para += [vec(self.B_mask)]
+        if D_mask is not None:
+            self.D_mask = DM(D_mask)
+            self.mask_para += [vec(self.D_mask)]
+        if dyn_offset_mask is not None:
+            self.dyn_offset_mask = DM(dyn_offset_mask)
+            self.mask_para += [vec(self.dyn_offset_mask)]
+
+        if E_mask is not None:
+            self.E_mask = DM(E_mask)
+            self.mask_para += [vec(self.E_mask)]
+        if H_mask is not None:
+            self.H_mask = DM(H_mask)
+            self.mask_para += [vec(self.H_mask)]
+        if G_mask is not None:
+            self.G_mask = DM(G_mask)
+            self.mask_para += [vec(self.G_mask)]
+        if S_mask is not None:
+            self.S_mask = DM(S_mask)
+            self.mask_para += [vec(self.S_mask)]
+        if lcp_offset_mask is not None:
+            self.lcp_offset_mask = DM(lcp_offset_mask)
+            self.mask_para += [vec(self.lcp_offset_mask)]
+
+        self.theta_mask = vcat(self.mask_para)
+        self.n_theta_mask = self.theta_mask.numel()
+
+        if not (self.n_theta_mask == self.n_theta):
+            raise Exception('check the parameter and mask consistency')
 
     def toMatG(self, G_para):
 
@@ -285,7 +310,8 @@ class LCS_VN:
                         w_D * dot(vec(DM(D_ref)) - vec(self.D), vec(DM(D_ref)) - vec(self.D)) + \
                         w_F * dot(vec(DM(F_ref)) - vec(self.F), vec(DM(F_ref)) - vec(self.F))
         self.loss_fn = Function('loss_fn', [data_pair, lam_phi, mu, self.theta, theta_M],
-                                [jacobian(L, self.theta).T, dyn_loss_plus, lcp_aug_loss])
+                                [jacobian(L, self.theta).T*self.theta_mask, dyn_loss_plus, lcp_aug_loss])
+        # pdb.set_trace()
 
         # define the dyn prediction, pred_xu_theta should also contain theta_M
         pred_xu_theta = vertcat(x, u, self.theta, theta_M)
@@ -307,20 +333,6 @@ class LCS_VN:
         # theta and theta_M
         theta_batch = np.tile(current_theta, (batch_size, 1))
 
-        # theta_M_list = []
-        # for i in range(batch_size):
-        #     A_Mi = batch_A[i].flatten('F')
-        #     B_Mi = batch_B[i].flatten('F')
-        #     D_Mi = batch_D[i].flatten('F')
-        #     dynamic_offset_Mi = batch_dynamic_offset[i]
-        #     E_Mi = batch_E[i].flatten('F')
-        #     H_Mi = batch_H[i].flatten('F')
-        #     F_Mi = batch_F[i].flatten('F')
-        #     lcp_offset_Mi = batch_lcp_offset[i]
-        #     theta_Mi = np.concatenate([A_Mi, B_Mi, D_Mi, dynamic_offset_Mi, E_Mi, H_Mi, F_Mi, lcp_offset_Mi])
-        #     theta_M_list.append(theta_Mi)
-        # theta_M_batch = np.stack(theta_M_list,axis=1).T
-
         theta_M_batch = self.Form_theta_M(batch_A,batch_B,batch_D,batch_dynamic_offset,batch_E,batch_H,batch_F,batch_lcp_offset).full().T
         # pdb.set_trace()
 
@@ -337,15 +349,6 @@ class LCS_VN:
         lam_batch = lam_phi_batch[0:self.n_lam, :]
         phi_batch = lam_phi_batch[self.n_lam:, :]
         mu_batch = sol['lam_x'].full()
-        # for i in range(batch_size):
-        #     F_learnt = self.F_fn(current_theta)
-        #     F_state = batch_F[i]
-        #     F_check = F_learnt + F_state
-        #     # print(F_learnt)
-        #     # print(F_state)
-        #     print(min(np.linalg.eigvals(F_check+F_check.T)))
-        #     print(min(np.linalg.eigvals(F_state + F_state.T)))
-        # pdb.set_trace()
 
         # solve the gradient
         # start_gradient_time = time.time()
@@ -353,6 +356,7 @@ class LCS_VN:
                                                                      current_theta, theta_M_batch.T)
         # end_gradient_time = time.time()
         # print("Gradient_time: " + str(end_gradient_time - start_gradient_time))
+        # pdb.set_trace()
 
         # do the update of gradient descent
         mean_loss = loss_batch.mean()
