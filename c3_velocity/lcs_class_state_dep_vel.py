@@ -103,13 +103,17 @@ class LCS_Gen:
 class LCS_VN:
 
     def __init__(self, n_state, n_control, n_lam, n_vel, A=None, B=None, D=None, dyn_offset=None,
-                 E=None, H=None, G_para=None, S=None, lcp_offset=None, F_stiffness=1.0, A_mask=None,
+                 E=None, H=None, G_para=None, S=None, lcp_offset=None, F_stiffness=1.0, Q=None, A_mask=None,
                  B_mask=None, D_mask=None, dyn_offset_mask=None, E_mask=None, H_mask=None, G_mask=None,
                  S_mask=None, lcp_offset_mask=None):
+        # system parameters
         self.n_state = n_state
         self.n_control = n_control
         self.n_lam = n_lam
         self.n_vel = n_vel
+
+        # weighting matrix for prediction loss
+        self.Q = Q
 
         # define system matrices
         self.tunable_para = []
@@ -281,7 +285,10 @@ class LCS_VN:
 
         # dynamics
         dyn = (self.A + A_M) @ x + (self.B + B_M) @ u + (self.D + D_M) @ lam + (self.dyn_offset + dyn_offset_M)
-        dyn_loss = dot(dyn - x_next, dyn - x_next)
+        if self.Q is None:
+            dyn_loss = dot(dyn - x_next, dyn - x_next)
+        else:
+            dyn_loss = (dyn - x_next).T @ self.Q @ (dyn - x_next)
 
         # lcp loss
         dist = (self.E + E_M) @ x + (self.H + H_M) @ u + (self.F + F_M) @ lam + (self.lcp_offset + lcp_offset_M)
@@ -335,7 +342,6 @@ class LCS_VN:
 
         theta_M_batch = self.Form_theta_M(batch_A,batch_B,batch_D,batch_dynamic_offset,batch_E,batch_H,batch_F,batch_lcp_offset).full().T
         # pdb.set_trace()
-
         # Assemble data (x,u,x_next) and theta (learnt + data input)
         data_theta_batch = np.hstack((batch_x, batch_u, batch_x_next, theta_batch, theta_M_batch))
 
