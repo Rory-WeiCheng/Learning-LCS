@@ -21,6 +21,8 @@ x_model_AB_list = []
 x_model_lcs_list = []
 x_next_true_list = []
 
+A_list = []
+B_list = []
 D_list = []
 d_list = []
 E_list = []
@@ -35,7 +37,7 @@ n_vel = 9
 
 # load the data, should be improved in the future
 # 100 single push data, 10 data points per push
-for i in range(20):
+for i in range(10):
     # The state and input data
     log_num = "{:02}".format(i)
     data_dir_xu = "/usr/rory-workspace/data/c3_learning/data_new/dt_001/State_Residual-{}.npz".format(log_num)
@@ -61,6 +63,10 @@ for i in range(20):
     # The system data
     data_dir_lcs = "/usr/rory-workspace/data/c3_learning/data_new/dt_001/LCS_Matrices-{}.npz".format(log_num)
     data_lcs = np.load(data_dir_lcs, allow_pickle=True)
+    A = data_lcs['A_lcs'][:-1]
+    A = A[:,n_state-n_vel:n_state]
+    B = data_lcs['B_lcs'][:-1]
+    B = B[:,n_state-n_vel:n_state]
     D = data_lcs['D_lcs'][:-1]
     D = D[:,n_state-n_vel:n_state]
     d = data_lcs['d_lcs'][:-1]
@@ -69,6 +75,8 @@ for i in range(20):
     F = data_lcs['F_lcs'][:-1]
     H = data_lcs['H_lcs'][:-1]
     c = data_lcs['c_lcs'][:-1]
+    A_list.append(A)
+    B_list.append(B)
     D_list.append(D)
     d_list.append(d)
     E_list.append(E)
@@ -88,13 +96,14 @@ x_next_true = np.concatenate(x_next_true_list,axis=0)
 A_batch = np.zeros((x_batch.shape[0],n_vel,n_state))
 B_batch = np.zeros((x_batch.shape[0],n_vel,n_control))
 D_batch = np.concatenate(D_list,axis=0)
-d_batch = np.zeros((x_batch.shape[0],n_vel))
+A_batch = np.zeros((x_batch.shape[0],n_vel))
 E_batch = np.concatenate(E_list,axis=0)
 F_batch = np.concatenate(F_list,axis=0)
 H_batch = np.concatenate(H_list,axis=0)
 c_batch = np.concatenate(c_list,axis=0)
 
-
+np.set_printoptions(linewidth=450)
+# pdb.set_trace()
 # import matplotlib.pyplot as plt
 # # # briefly check the result
 # # ball position and velocity
@@ -154,7 +163,7 @@ E_init = np.zeros(n_lam * n_state)
 F_init = np.zeros(n_lam * n_lam)
 H_init = np.zeros(n_lam * n_control)
 c_init = np.zeros(n_lam)
-c_init[2] = 0.1
+# c_init[2] = 0.1
 
 # reparameterization part F divided into G and H_re
 # F_init_m = lcs_init['F_lcs'][0] + 0.5 * np.eye(n_lam,n_lam) # force F to be positive definite
@@ -169,34 +178,34 @@ G_init = np.zeros(int((n_lam + 1) * n_lam / 2)).flatten('F')
 S_init = np.zeros((n_lam,n_lam)).flatten('F')
 
 # There are two warm start options
-# Option 1 : warm start with A,B,D,d,E,H,c and G,H_re, A,B,d should be near zero since our model predicts the A,B part
-# vn_curr_theta = np.concatenate([A_init,B_init,D_init,d_init,E_init,H_init,G_init,S_init,c_init])
-# Option 2 : warm start with D,d,E,H,c and G,H_re only, fixe A,B,d to be zeros since we believe the normal dynamics model
+# Option 1 : warm start with A,B,D,d,E,H,c and G,S, A,B,d should be near zero since our model predicts the A,B part
+vn_curr_theta = np.concatenate([A_init,B_init,D_init,d_init,E_init,H_init,G_init,S_init,c_init])
+# Option 2 : warm start with D,d,E,H,c and G,S only, fixe A,B,d to be zeros since we believe the normal dynamics model
 # (robot properties from URDF) is nearly perfect
-vn_curr_theta = np.concatenate([D_init,E_init,H_init,G_init,S_init,c_init])
+# vn_curr_theta = np.concatenate([D_init,E_init,H_init,G_init,S_init,c_init])
 
 # Structure Options
 # imposing the structure we want to learning, give the pre-defined matrix masks, 0 for entries want to fix, 1 for entries need to learnt
 
-A_mask = np.zeros((n_vel, n_state))
-# A_mask = np.ones((n_vel, n_state))
+# A_mask = np.zeros((n_vel, n_state))
+A_mask = np.ones((n_vel, n_state))
 # A_mask[3:6,:] = np.zeros((3,n_state))
 
-B_mask = np.zeros((n_vel, n_control))
-# B_mask = np.ones((n_vel, n_control))
+# B_mask = np.zeros((n_vel, n_control))
+B_mask = np.ones((n_vel, n_control))
 # B_mask[3:6,:] = np.zeros((3,n_control))
 
-D_mask = np.zeros((n_vel, n_lam))
-# D_mask = np.ones((n_vel, n_lam))
-# D_mask[:,0:2] = np.zeros((n_vel, 2))
+# D_mask = np.zeros((n_vel, n_lam))
+D_mask = np.ones((n_vel, n_lam))
+D_mask[:,0:2] = np.zeros((n_vel, 2))
 # D_mask[3:6,:] = np.zeros((3,n_lam))
 
-d_mask = np.zeros((n_vel, n_lam))
-# d_mask = np.ones((n_vel, n_lam))
+# d_mask = np.zeros(n_vel)
+d_mask = np.ones(n_vel)
 
-E_mask = np.zeros((n_lam, n_state))
-# E_mask = np.ones((n_lam, n_state))
-# E_mask[0:2,:] = np.zeros((2, n_state))
+# E_mask = np.zeros((n_lam, n_state))
+E_mask = np.ones((n_lam, n_state))
+E_mask[0:2,:] = np.zeros((2, n_state))
 
 # H_mask = np.zeros((n_lam, n_control))
 H_mask = np.ones((n_lam, n_control))
@@ -214,7 +223,6 @@ c_mask[0:2] = 0
 G_mask = np.ones(int((n_lam + 1) * n_lam / 2))
 S_mask = np.ones((n_lam,n_lam))
 
-
 # establish the violation-based learner
 F_stiffness = 0.5
 gamma = 1e-1
@@ -225,11 +233,14 @@ Q_bp = np.eye(3)
 Q = scipy.linalg.block_diag(Q_ee,Q_br,Q_bp)
 
 # pdb.set_trace()
-# vn_learner = lcs_class_state_dep_vel.LCS_VN(n_state=n_state, n_control=n_control, n_lam=n_lam, F_stiffness=F_stiffness)
-vn_learner = lcs_class_state_dep_vel.LCS_VN(n_state=n_state, n_control=n_control, n_lam=n_lam, n_vel=n_vel, A=A_init_m, B=B_init_m,
-                                        dyn_offset=d_init, F_stiffness=F_stiffness, Q=Q, A_mask=None, B_mask=None, D_mask=D_mask,
-                                        dyn_offset_mask=None, E_mask=E_mask, H_mask=H_mask, G_mask=G_mask, S_mask=S_mask, lcp_offset_mask=c_mask)
+vn_learner = lcs_class_state_dep_vel.LCS_VN(n_state=n_state, n_control=n_control, n_lam=n_lam, n_vel=n_vel, F_stiffness=F_stiffness, Q=Q,
+                                            A_mask=A_mask, B_mask=B_mask, D_mask=D_mask, dyn_offset_mask=d_mask, E_mask=E_mask,
+                                            H_mask=H_mask, G_mask=G_mask, S_mask=S_mask, lcp_offset_mask=c_mask)
 vn_learner.diff(gamma=gamma, epsilon=epsilon, w_D=1e-6, D_ref=0, w_F=0e-6, F_ref=0)
+# vn_learner = lcs_class_state_dep_vel.LCS_VN(n_state=n_state, n_control=n_control, n_lam=n_lam, n_vel=n_vel, A=A_init_m, B=B_init_m,
+#                                         dyn_offset=d_init, F_stiffness=F_stiffness, Q=Q, A_mask=None, B_mask=None, D_mask=D_mask,
+#                                         dyn_offset_mask=None, E_mask=E_mask, H_mask=H_mask, G_mask=G_mask, S_mask=S_mask, lcp_offset_mask=c_mask)
+# vn_learner.diff(gamma=gamma, epsilon=epsilon, w_D=1e-6, D_ref=0, w_F=0e-6, F_ref=0)
 
 # establish the optimizer
 vn_learning_rate = 0.8e-3
@@ -238,7 +249,7 @@ vn_optimizier.learning_rate = vn_learning_rate
 
 # training loop
 max_iter = 100
-mini_batch_size = 200
+mini_batch_size = 100
 # vn_curr_theta = 0.01 * np.random.randn(vn_learner.n_theta)
 
 
@@ -283,6 +294,7 @@ for iter in range(max_iter):
 
         c_mini_batch = c_batch[shuffle_index]
         c_mini_batch = c_mini_batch.T
+        # pdb.set_trace()
         # end_data_time = time.time()
         # print("Data_time: " + str(end_data_time - start_data_time))
         # do one step for VN
@@ -315,7 +327,7 @@ plt.plot(dyn_loss_list, label='dynamic loss (prediction loss)')
 plt.plot(lcp_loss_list, label='lcp loss (violation loss)')
 plt.legend(fontsize=20)
 
-pdb.set_trace()
+# pdb.set_trace()
 ############################################### get and save results ###################################################
 A_res = vn_learner.A_fn(vn_curr_theta)
 B_res = vn_learner.B_fn(vn_curr_theta)
@@ -451,7 +463,7 @@ plt.xticks(size = 20)
 plt.yticks(size = 20)
 plt.show()
 
-pdb.set_trace()
+# pdb.set_trace()
 
 # plt.figure(figsize = (24,16))
 # plt.plot(res_batch[:,7]*100, label='x position residual')

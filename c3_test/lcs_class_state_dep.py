@@ -7,6 +7,7 @@ from scipy import interpolate
 from scipy.signal import savgol_filter
 import matplotlib.pyplot as plt
 
+
 # 2023.4.24 fix the notation issue, follow Alp's work
 class LCS_Gen:
 
@@ -35,7 +36,7 @@ class LCS_Gen:
         # define the model system matrices, M stands for model
         Model_para = []
         A_M = SX.sym('A_M', self.n_state, self.n_state)
-        Model_para+= [vec(A_M)]
+        Model_para += [vec(A_M)]
         B_M = SX.sym('B_M', self.n_state, self.n_control)
         Model_para += [vec(B_M)]
         D_M = SX.sym('D_M', self.n_state, self.n_lam)
@@ -58,11 +59,11 @@ class LCS_Gen:
         xu_theta_pair = vertcat(xu_pair, theta_M)
 
         # dynamics
-        dyn = (self.A+A_M) @ x + (self.B+B_M) @ u + (self.D+D_M) @ lam + (self.dyn_offset+dyn_offset_M)
+        dyn = (self.A + A_M) @ x + (self.B + B_M) @ u + (self.D + D_M) @ lam + (self.dyn_offset + dyn_offset_M)
         self.dyn_fn = Function('dyn_fn', [xu_theta_pair, lam], [dyn])
 
         # lcp function
-        lcp_cstr = (self.E+E_M) @ x + (self.H+H_M) @ u + (self.F+F_M) @ lam + (self.lcp_offset+lcp_offset_M)
+        lcp_cstr = (self.E + E_M) @ x + (self.H + H_M) @ u + (self.F + F_M) @ lam + (self.lcp_offset + lcp_offset_M)
         lcp_loss = dot(lam, lcp_cstr)
         self.lcp_loss_fn = Function('dyn_loss_fn', [xu_theta_pair, lam], [lcp_loss])
         self.lcp_cstr_fn = Function('dis_cstr_fn', [xu_theta_pair, lam], [lcp_cstr])
@@ -74,8 +75,7 @@ class LCS_Gen:
         self.lcpSolver = qpsol('lcpSolver', 'osqp', quadprog, opts)
 
     def nextState(self, x_batch, u_batch, batch_A, batch_B, batch_D, batch_dynamic_offset,
-             batch_E, batch_H, batch_F, batch_lcp_offset):
-
+                  batch_E, batch_H, batch_F, batch_lcp_offset):
         batch_size = x_batch.shape[0]
         # theta_M_list = []
         # for i in range(batch_size):
@@ -95,6 +95,7 @@ class LCS_Gen:
                                           batch_lcp_offset).full().T
         xu_theta_batch = np.hstack((x_batch, u_batch, theta_M_batch))
 
+        xu_theta_batch = DM(xu_theta_batch)
         sol = self.lcpSolver(p=xu_theta_batch.T, lbx=0., lbg=0.)
         lam_batch = sol['x'].full()
 
@@ -221,7 +222,7 @@ class LCS_VN:
         # define the model system matrices, M stands for model
         Model_para = []
         A_M = SX.sym('A_M', self.n_state, self.n_state)
-        Model_para+= [vec(A_M)]
+        Model_para += [vec(A_M)]
         B_M = SX.sym('B_M', self.n_state, self.n_control)
         Model_para += [vec(B_M)]
         D_M = SX.sym('D_M', self.n_state, self.n_lam)
@@ -272,6 +273,10 @@ class LCS_VN:
         quadprog = {'x': lam_phi, 'f': total_loss, 'p': data_theta}
         opts = {'print_time': 0, 'osqp': {'verbose': False}}
         self.qpSolver = qpsol('Solver_QP', 'osqp', quadprog, opts)
+        # opts = {"print_time": 0, "printLevel": "none", "verbose": 0}
+        # self.qpSolver = qpsol('Solver_QP', 'qpoases', quadprog, opts)
+        # opts = {}
+        # self.qpSolver = qpsol('Solver_QP', 'proxqp', quadprog, opts)
 
         # compute the jacobian from lam to theta
         mu = SX.sym('mu', self.n_lam + self.n_lam)
@@ -297,43 +302,38 @@ class LCS_VN:
     def step(self, batch_x, batch_u, batch_x_next, current_theta, batch_A, batch_B, batch_D, batch_dynamic_offset,
              batch_E, batch_H, batch_F, batch_lcp_offset):
 
+        start_step_time = time.time()
         # do data processing for batch calculation
         # batch x,u,x_next, horizontal concatenate, then use transpose for input
         batch_size = batch_x.shape[0]
-        data_batch = np.hstack((batch_x, batch_u, batch_x_next))
+        data_batch = hcat((batch_x, batch_u, batch_x_next))
         # theta and theta_M
-        theta_batch = np.tile(current_theta, (batch_size, 1))
+        theta_batch = repmat(DM(current_theta).T, batch_size, 1)
 
-        # theta_M_list = []
-        # for i in range(batch_size):
-        #     A_Mi = batch_A[i].flatten('F')
-        #     B_Mi = batch_B[i].flatten('F')
-        #     D_Mi = batch_D[i].flatten('F')
-        #     dynamic_offset_Mi = batch_dynamic_offset[i]
-        #     E_Mi = batch_E[i].flatten('F')
-        #     H_Mi = batch_H[i].flatten('F')
-        #     F_Mi = batch_F[i].flatten('F')
-        #     lcp_offset_Mi = batch_lcp_offset[i]
-        #     theta_Mi = np.concatenate([A_Mi, B_Mi, D_Mi, dynamic_offset_Mi, E_Mi, H_Mi, F_Mi, lcp_offset_Mi])
-        #     theta_M_list.append(theta_Mi)
-        # theta_M_batch = np.stack(theta_M_list,axis=1).T
 
         theta_M_batch = self.Form_theta_M(batch_A, batch_B, batch_D, batch_dynamic_offset, batch_E, batch_H, batch_F,
-                                          batch_lcp_offset).full().T
+                                          batch_lcp_offset).T
+
+        end_data_time = time.time()
+        print("Data_time: " + str(end_data_time - start_step_time))
 
         # Assemble data (x,u,x_next) and theta (learnt + data input)
-        data_theta_batch = np.hstack((batch_x, batch_u, batch_x_next, theta_batch, theta_M_batch))
+        # print(data_batch.shape, theta_M_batch.shape, theta_batch.shape)
+        data_theta_batch = hcat((data_batch, theta_batch, theta_M_batch))
+        # data_theta_batch = np.hstack((batch_x, batch_u, batch_x_next, theta_batch, theta_M_batch))
+        # print(time.time()-start_step_time)
 
         # establish the solver, solve for lambda and phi using QP and prepare to feed to the gradient step
         # start_QP_time = time.time()
         sol = self.qpSolver(lbx=0., p=data_theta_batch.T)
+        # print(self.qpSolver)
         # end_QP_time = time.time()
         # print("QP_time: " + str(end_QP_time - start_QP_time))
-        loss_batch = sol['f'].full()
-        lam_phi_batch = sol['x'].full()
+        loss_batch = sol['f']
+        lam_phi_batch = sol['x']
         lam_batch = lam_phi_batch[0:self.n_lam, :]
         phi_batch = lam_phi_batch[self.n_lam:, :]
-        mu_batch = sol['lam_x'].full()
+        mu_batch = sol['lam_x']
         # for i in range(batch_size):
         #     F_learnt = self.F_fn(current_theta)
         #     F_state = batch_F[i]
@@ -345,16 +345,18 @@ class LCS_VN:
         # pdb.set_trace()
 
         # solve the gradient
-        # start_gradient_time = time.time()
+        start_gradient_time = time.time()
         dtheta_batch, dyn_loss_batch, lcp_loss_batch, = self.loss_fn(data_batch.T, lam_phi_batch, mu_batch,
-                                                                     current_theta,theta_M_batch.T)
-        # end_gradient_time = time.time()
-        # print("Gradient_time: " + str(end_gradient_time - start_gradient_time))
+                                                                     current_theta, theta_M_batch.T)
+        end_gradient_time = time.time()
+        print("Gradient_time: " + str(end_gradient_time - start_gradient_time))
 
         # do the update of gradient descent
-        mean_loss = loss_batch.mean()
+        mean_loss = loss_batch
         mean_dtheta = dtheta_batch.full().mean(axis=1)
-        mean_dyn_loss = dyn_loss_batch.full().mean()
-        mean_lcp_loss = lcp_loss_batch.full().mean()
+        mean_dyn_loss = dyn_loss_batch
+        mean_lcp_loss = lcp_loss_batch
 
+        end_step_time = time.time()
+        print("Step_time: " + str(end_step_time - start_step_time))
         return mean_loss, mean_dtheta, mean_dyn_loss, mean_lcp_loss, lam_batch.T

@@ -111,6 +111,14 @@ class LCS_VN:
         self.n_control = n_control
         self.n_lam = n_lam
         self.n_vel = n_vel
+        # 2023.6.9 sanity check
+        self.lam2_list = []
+        self.phi2_list = []
+        self.grad_c2list = []
+        self.lam3_list = []
+        self.phi3_list = []
+        self.grad_c3list = []
+        self.cnt = 0
 
         # weighting matrix for prediction loss
         self.Q = Q
@@ -225,7 +233,6 @@ class LCS_VN:
 
         self.theta_mask = vcat(self.mask_para)
         self.n_theta_mask = self.theta_mask.numel()
-
         if not (self.n_theta_mask == self.n_theta):
             raise Exception('check the parameter and mask consistency')
 
@@ -305,7 +312,7 @@ class LCS_VN:
         data_theta = vertcat(data_pair, self.theta, theta_M)
         lam_phi = vertcat(lam, phi)
         quadprog = {'x': lam_phi, 'f': total_loss, 'p': data_theta}
-        opts = {'print_time': 0, 'osqp': {'verbose': False}}
+        opts = {'print_time': 0, 'osqp': {'verbose': False}, 'error_on_fail':False}
         self.qpSolver = qpsol('Solver_QP', 'osqp', quadprog, opts)
 
         # compute the jacobian from lam to theta
@@ -326,7 +333,8 @@ class LCS_VN:
         pred_x = vertcat(x_next, lam, phi)
         pred_g = vertcat(lam, phi)
         pred_quadprog = {'x': pred_x, 'f': pred_loss, 'g': pred_g, 'p': pred_xu_theta}
-        opts = {'print_time': 0, 'osqp': {'verbose': False}}
+        # 'error_on_fail': False to make it keep solving when QP failed
+        opts = {'print_time': 0, 'osqp': {'verbose': False}, 'error_on_fail':False}
         # self.pred_qpSolver = qpsol('pred_qpSolver', 'osqp', pred_quadprog, opts)
         # self.pred_error_fn = Function('pred_error_fn', [x, x_next], [dot(x - x_next, x - x_next)])
 
@@ -344,6 +352,11 @@ class LCS_VN:
         # pdb.set_trace()
         # Assemble data (x,u,x_next) and theta (learnt + data input)
         data_theta_batch = np.hstack((batch_x, batch_u, batch_x_next, theta_batch, theta_M_batch))
+        # set the data type to DM to speed up the code
+        # start_convert_time = time.time()
+        # data_theta_batch = DM(data_theta_batch)
+        # end_convert_time = time.time()
+        # print("Convert_time: " + str(end_convert_time - start_convert_time))
 
         # establish the solver, solve for lambda and phi using QP and prepare to feed to the gradient step
         # start_QP_time = time.time()
@@ -356,17 +369,60 @@ class LCS_VN:
         phi_batch = lam_phi_batch[self.n_lam:, :]
         mu_batch = sol['lam_x'].full()
 
+        # set the parameter data type to DM to speed up the code
+        # start_convert_time = time.time()
+        data_batch = DM(data_batch)
+        theta_M_batch = DM(theta_M_batch)
+        lam_phi_batch = DM(lam_phi_batch)
+        mu_batch = DM(mu_batch)
+        # end_convert_time = time.time()
+        # print("Convert_time: " + str(end_convert_time - start_convert_time))
+
         # solve the gradient
         # start_gradient_time = time.time()
         dtheta_batch, dyn_loss_batch, lcp_loss_batch, = self.loss_fn(data_batch.T, lam_phi_batch, mu_batch,
                                                                      current_theta, theta_M_batch.T)
-        # end_gradient_time = time.time()
+        end_gradient_time = time.time()
         # print("Gradient_time: " + str(end_gradient_time - start_gradient_time))
         # pdb.set_trace()
 
+        # # 2023.6.9 sanity check
+        # gradc = self.lcp_offset_fn(dtheta_batch).full()
+        # if np.all(gradc==0):
+        #     pass
+        # else:
+        #     self.lam2_list.append(lam_batch[2])
+        #     self.lam3_list.append(lam_batch[3])
+        #     self.phi2_list.append(phi_batch[2])
+        #     self.phi3_list.append(phi_batch[3])
+        #     self.grad_c2list.append(gradc[2])
+        #     self.grad_c3list.append(gradc[3])
+        #     self.cnt = self.cnt + 1
+        # if self.cnt == 10000:
+        #     import matplotlib.pyplot as plt
+        #     plt.figure(figsize=(24, 16))
+        #     plt.plot(self.lam2_list,label="lambda[2]")
+        #     # plt.plot(self.lam3_list, label="lambda[3]")
+        #     plt.legend()
+        #     plt.figure(figsize=(24, 16))
+        #     plt.plot(self.phi2_list,label="phi[2]")
+        #     # plt.plot(self.phi3_list, label="phi[3]")
+        #     plt.legend()
+        #     plt.figure(figsize=(24, 16))
+        #     plt.plot(self.grad_c2list,label="gradc[2]")
+        #     # plt.plot(self.grad_c3list, label="gradc[3]")
+        #     plt.legend()
+        #     plt.show()
+        #     pdb.set_trace()
+
+
         # do the update of gradient descent
         mean_loss = loss_batch.mean()
-        mean_dtheta = dtheta_batch.full().mean(axis=1)
+        # mean_dtheta = dtheta_batch.full().mean(axis=1)
+        mean_dtheta = dtheta_batch.full()
+        # gradient magnitude filtering
+        mean_dtheta = np.where(abs(mean_dtheta)>5e-5,mean_dtheta,0)
+        mean_dtheta = mean_dtheta.mean(axis=1)
         mean_dyn_loss = dyn_loss_batch.full().mean()
         mean_lcp_loss = lcp_loss_batch.full().mean()
 

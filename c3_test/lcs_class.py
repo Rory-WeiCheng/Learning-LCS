@@ -192,6 +192,10 @@ class LCS_VN:
         quadprog = {'x': lam_phi, 'f': total_loss, 'p': data_theta}
         opts = {'print_time': 0, 'osqp': {'verbose': False}}
         self.qpSolver = qpsol('Solver_QP', 'osqp', quadprog, opts)
+        # opts = {"print_time": 0, "printLevel": "none", "verbose": 0}
+        # self.qpSolver = qpsol('Solver_QP', 'qpoases', quadprog, opts)
+        # opts = {}
+        # self.qpSolver = qpsol('Solver_QP', 'proxqp', quadprog, opts)
 
         # compute the jacobian from lam to theta
         mu = SX.sym('mu', self.n_lam + self.n_lam)
@@ -215,15 +219,19 @@ class LCS_VN:
         self.pred_error_fn = Function('pred_error_fn', [x, x_next], [dot(x - x_next, x - x_next)])
 
     def step(self, batch_x, batch_u, batch_x_next, current_theta):
-
+        start_step_time = time.time()
         # solve for the
         batch_size = batch_x.shape[0]
         theta_batch = np.tile(current_theta, (batch_size, 1))
         data_batch = np.hstack((batch_x, batch_u, batch_x_next))
         data_theta_batch = np.hstack((batch_x, batch_u, batch_x_next, theta_batch))
+        end_data_time = time.time()
+        print("Data_time: " + str(end_data_time - start_step_time))
 
         # start_QP_time = time.time()
         sol = self.qpSolver(lbx=0., p=data_theta_batch.T)
+        # print(self.qpSolver)
+        # input()
         # end_QP_time = time.time()
         # print("QP_time: " + str(end_QP_time - start_QP_time))
 
@@ -246,5 +254,7 @@ class LCS_VN:
         mean_dyn_loss = dyn_loss_batch.full().mean()
         mean_lcp_loss = lcp_loss_batch.full().mean()
 
+        end_step_time = time.time()
+        print("Step_time: " + str(end_step_time - start_step_time))
         return mean_loss, mean_dtheta, mean_dyn_loss, mean_lcp_loss, lam_batch.T
 
