@@ -6,6 +6,7 @@ from casadi import *
 from scipy import interpolate
 from scipy.signal import savgol_filter
 import matplotlib.pyplot as plt
+import scipy
 
 # 2023.4.24 fix the notation issue, follow Alp's work
 class LCS_Gen:
@@ -112,12 +113,13 @@ class LCS_VN:
         self.n_lam = n_lam
         self.n_vel = n_vel
         # 2023.6.9 sanity check
-        self.lam2_list = []
-        self.phi2_list = []
-        self.grad_c2list = []
-        self.lam3_list = []
-        self.phi3_list = []
-        self.grad_c3list = []
+        self.lameeb_list = []
+        self.phieeb_list = []
+        self.grad_ceeblist = []
+        self.lambg_list = []
+        self.phibg_list = []
+        self.grad_cbglist = []
+        self.eigen_list = []
         self.cnt = 0
 
         # weighting matrix for prediction loss
@@ -184,7 +186,7 @@ class LCS_VN:
         self.theta = vcat(self.tunable_para)
         self.n_theta = self.theta.numel()
 
-        self.F = self.G @ self.G.T + F_stiffness * np.eye(self.n_lam) + self.S - self.S.T
+        self.F = self.G @ self.G.T + F_stiffness * SX.eye(self.n_lam) + self.S - self.S.T
 
         self.A_fn = Function('A_fn', [self.theta], [self.A])
         self.B_fn = Function('B_fn', [self.theta], [self.B])
@@ -293,27 +295,54 @@ class LCS_VN:
         # dynamics
         dyn = (self.A + A_M) @ x + (self.B + B_M) @ u + (self.D + D_M) @ lam + (self.dyn_offset + dyn_offset_M)
         if self.Q is None:
-            dyn_loss = dot(dyn - x_next, dyn - x_next)
+            dyn_loss = 0.5 * dot(dyn - x_next, dyn - x_next)
         else:
-            dyn_loss = (dyn - x_next).T @ self.Q @ (dyn - x_next)
+            dyn_loss = 0.5 * (dyn - x_next).T @ self.Q @ (dyn - x_next)
 
         # lcp loss
         dist = (self.E + E_M) @ x + (self.H + H_M) @ u + (self.F + F_M) @ lam + (self.lcp_offset + lcp_offset_M)
-        lcp_aug_loss = dot(lam, phi) + 1 / gamma * dot(phi - dist, phi - dist)
+        lcp_aug_loss = dot(lam, phi) + 0.5 * 1 / gamma * dot(phi - dist, phi - dist)
 
         # define loss function
         total_loss = 1. * dyn_loss \
                      + 1. / epsilon * lcp_aug_loss \
                      + w_D * dot(vec(DM(D_ref)) - vec(self.D), vec(DM(D_ref)) - vec(self.D)) \
-                     + w_F * dot(vec(DM(F_ref)) - vec(self.F), vec(DM(F_ref)) - vec(self.F))
+                     + w_F * dot(vec(DM(F_ref)) - vec(self.F), vec(DM(F_ref)) - vec(self.F)) \
+
+        # # construct the quadratic term for convexity check, self coded
+        # D_QP = (self.D + D_M)
+        # F_QP = (self.F + F_M)
+        # Quad_blk_ul = D_QP.T @ self.Q @ D_QP + 1 / (epsilon * gamma) * F_QP.T @ F_QP
+        # Quad_blk_ur = 1 / (epsilon) * SX.eye(self.n_lam) - 1 / (epsilon * gamma) * F_QP.T
+        # Quad_blk_bl = 1 / (epsilon) * SX.eye(self.n_lam) - 1 / (epsilon * gamma) * F_QP
+        # Quad_blk_br = 1 / (epsilon * gamma) * SX.eye(self.n_lam)
+        # Quad = blockcat(Quad_blk_ul, Quad_blk_ur, Quad_blk_bl, Quad_blk_br)
+        # self.Form_Quadratic = Function('Form_Quadratic', [self.theta, theta_M], [Quad])
+        # self.Form_Fcheck = Function('Form_Fcheck', [F_M, self.G, self.S], [F_QP])
 
         # establish the qp solver, now the data_theta should contain three parts:
         # 1. (x,u,x_next) 2. theta (learnable parameters) 3.theta_M (local state dependent lcs matrices input)
         data_theta = vertcat(data_pair, self.theta, theta_M)
         lam_phi = vertcat(lam, phi)
+
+        # construct the quadratic term for convexity check, using casadi
+        Quadratic_casadi, self.Linear_casadi, self.constant_casadi = quadratic_coeff(total_loss, lam_phi)
+        self.Form_Quadratic_casadi = Function('Form_Quadratic_casadi', [self.theta, theta_M], [Quadratic_casadi])
+
         quadprog = {'x': lam_phi, 'f': total_loss, 'p': data_theta}
-        opts = {'print_time': 0, 'osqp': {'verbose': False}, 'error_on_fail':False}
-        self.qpSolver = qpsol('Solver_QP', 'osqp', quadprog, opts)
+
+        # OSQP
+        # opts = {'print_time': 0, 'osqp': {'verbose': False}, 'error_on_fail': False}
+        # opts = {'print_time': 0, 'osqp': {'verbose': False, 'eps_rel': 1e-8},'error_on_fail':False}
+        # self.qpSolver = qpsol('Solver_QP', 'osqp', quadprog, opts)
+
+        # QPOASES
+        opts = {"print_time": 0, "printLevel": "none", "verbose": 0, 'error_on_fail': False}
+        self.qpSolver = qpsol('Solver_QP', 'qpoases', quadprog, opts)
+
+        nonlinprog = {'x': lam_phi, 'f': total_loss, 'p': data_theta}
+        opts = {'print_time': 0, 'ipopt': {'print_level': 0},'error_on_fail': False}
+        self.nlpSolver = nlpsol('Solver_NLP', 'ipopt', nonlinprog, opts)
 
         # compute the jacobian from lam to theta
         mu = SX.sym('mu', self.n_lam + self.n_lam)
@@ -327,17 +356,6 @@ class LCS_VN:
                                 [jacobian(L, self.theta).T*self.theta_mask, dyn_loss_plus, lcp_aug_loss])
         # pdb.set_trace()
 
-        # define the dyn prediction, pred_xu_theta should also contain theta_M
-        pred_xu_theta = vertcat(x, u, self.theta, theta_M)
-        pred_loss = 1. * dyn_loss + 1. / epsilon * lcp_aug_loss
-        pred_x = vertcat(x_next, lam, phi)
-        pred_g = vertcat(lam, phi)
-        pred_quadprog = {'x': pred_x, 'f': pred_loss, 'g': pred_g, 'p': pred_xu_theta}
-        # 'error_on_fail': False to make it keep solving when QP failed
-        opts = {'print_time': 0, 'osqp': {'verbose': False}, 'error_on_fail':False}
-        # self.pred_qpSolver = qpsol('pred_qpSolver', 'osqp', pred_quadprog, opts)
-        # self.pred_error_fn = Function('pred_error_fn', [x, x_next], [dot(x - x_next, x - x_next)])
-
     def step(self, batch_x, batch_u, batch_x_next, current_theta, batch_A, batch_B, batch_D, batch_dynamic_offset,
              batch_E, batch_H, batch_F, batch_lcp_offset):
 
@@ -348,21 +366,16 @@ class LCS_VN:
         # theta and theta_M
         theta_batch = np.tile(current_theta, (batch_size, 1))
 
-        theta_M_batch = self.Form_theta_M(batch_A,batch_B,batch_D,batch_dynamic_offset,batch_E,batch_H,batch_F,batch_lcp_offset).full().T
+        theta_M_batch = self.Form_theta_M(batch_A, batch_B, batch_D, batch_dynamic_offset, batch_E, batch_H,
+                                          batch_F, batch_lcp_offset).full().T
         # pdb.set_trace()
         # Assemble data (x,u,x_next) and theta (learnt + data input)
         data_theta_batch = np.hstack((batch_x, batch_u, batch_x_next, theta_batch, theta_M_batch))
-        # set the data type to DM to speed up the code
-        # start_convert_time = time.time()
-        # data_theta_batch = DM(data_theta_batch)
-        # end_convert_time = time.time()
-        # print("Convert_time: " + str(end_convert_time - start_convert_time))
 
         # establish the solver, solve for lambda and phi using QP and prepare to feed to the gradient step
-        # start_QP_time = time.time()
-        sol = self.qpSolver(lbx=0., p=data_theta_batch.T)
-        # end_QP_time = time.time()
-        # print("QP_time: " + str(end_QP_time-start_QP_time))
+        sol = self.qpSolver(lbx=0, p=data_theta_batch.T)
+        # sol = self.nlpSolver(lbx=0, p=data_theta_batch.T)
+
         loss_batch = sol['f'].full()
         lam_phi_batch = sol['x'].full()
         lam_batch = lam_phi_batch[0:self.n_lam, :]
@@ -370,58 +383,71 @@ class LCS_VN:
         mu_batch = sol['lam_x'].full()
 
         # set the parameter data type to DM to speed up the code
-        # start_convert_time = time.time()
         data_batch = DM(data_batch)
         theta_M_batch = DM(theta_M_batch)
         lam_phi_batch = DM(lam_phi_batch)
         mu_batch = DM(mu_batch)
-        # end_convert_time = time.time()
-        # print("Convert_time: " + str(end_convert_time - start_convert_time))
 
         # solve the gradient
         # start_gradient_time = time.time()
         dtheta_batch, dyn_loss_batch, lcp_loss_batch, = self.loss_fn(data_batch.T, lam_phi_batch, mu_batch,
                                                                      current_theta, theta_M_batch.T)
-        end_gradient_time = time.time()
-        # print("Gradient_time: " + str(end_gradient_time - start_gradient_time))
-        # pdb.set_trace()
 
-        # # 2023.6.9 sanity check
+        # # # 2023.6.9 sanity check
         # gradc = self.lcp_offset_fn(dtheta_batch).full()
         # if np.all(gradc==0):
         #     pass
         # else:
-        #     self.lam2_list.append(lam_batch[2])
-        #     self.lam3_list.append(lam_batch[3])
-        #     self.phi2_list.append(phi_batch[2])
-        #     self.phi3_list.append(phi_batch[3])
-        #     self.grad_c2list.append(gradc[2])
-        #     self.grad_c3list.append(gradc[3])
+        #     np.set_printoptions(linewidth=400)
+        #     self.lameeb_list.append(lam_batch[0])
+        #     self.lambg_list.append(lam_batch[4])
+        #     self.phieeb_list.append(phi_batch[0])
+        #     self.phibg_list.append(phi_batch[4])
+        #     self.grad_ceeblist.append(gradc[0])
+        #     self.grad_cbglist.append(gradc[4])
         #     self.cnt = self.cnt + 1
+        #     Quad = self.Form_Quadratic_casadi(current_theta,theta_M_batch.T).full()
+        #     EigenValue = np.min(np.linalg.eigvals(Quad))
+        #     self.eigen_list.append(EigenValue)
         # if self.cnt == 10000:
+        #     print('lambda[0] min')
+        #     print(min(self.lameeb_list))
+        #     print('phi[0] min')
+        #     print(min(self.phieeb_list))
+        #     print('lambda[4] min')
+        #     print(min(self.lambg_list))
+        #     print('phi[4] min')
+        #     print(min(self.phibg_list))
+        #     print('eigenvalue min')
+        #     print(min(self.eigen_list))
         #     import matplotlib.pyplot as plt
         #     plt.figure(figsize=(24, 16))
-        #     plt.plot(self.lam2_list,label="lambda[2]")
-        #     # plt.plot(self.lam3_list, label="lambda[3]")
+        #     plt.plot(self.lameeb_list,label="lam[0]")
+        #     plt.plot(self.phieeb_list,label="phi[0]")
         #     plt.legend()
         #     plt.figure(figsize=(24, 16))
-        #     plt.plot(self.phi2_list,label="phi[2]")
-        #     # plt.plot(self.phi3_list, label="phi[3]")
+        #     plt.plot(self.lambg_list, label="lam[4]")
+        #     plt.plot(self.phibg_list, label="phi[4]")
         #     plt.legend()
         #     plt.figure(figsize=(24, 16))
-        #     plt.plot(self.grad_c2list,label="gradc[2]")
-        #     # plt.plot(self.grad_c3list, label="gradc[3]")
+        #     plt.plot(self.grad_ceeblist,label="gradc[0]")
+        #     plt.legend()
+        #     plt.figure(figsize=(24, 16))
+        #     plt.plot(self.grad_cbglist, label="gradc[4]")
+        #     plt.legend()
+        #     plt.figure(figsize=(24, 16))
+        #     plt.plot(self.eigen_list, label="min eigenvalue of Quadratic Term")
         #     plt.legend()
         #     plt.show()
+        #
         #     pdb.set_trace()
-
 
         # do the update of gradient descent
         mean_loss = loss_batch.mean()
         # mean_dtheta = dtheta_batch.full().mean(axis=1)
         mean_dtheta = dtheta_batch.full()
         # gradient magnitude filtering
-        mean_dtheta = np.where(abs(mean_dtheta)>5e-5,mean_dtheta,0)
+        # mean_dtheta = np.where(abs(mean_dtheta)>1e-7,mean_dtheta,0)
         mean_dtheta = mean_dtheta.mean(axis=1)
         mean_dyn_loss = dyn_loss_batch.full().mean()
         mean_lcp_loss = lcp_loss_batch.full().mean()

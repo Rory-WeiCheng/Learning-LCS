@@ -21,7 +21,12 @@ import matplotlib.pyplot as plt
 num_state = 19
 num_velocity = 9
 num_control = 3
-num_lambda = 12
+num_lambda = 8
+
+# currently, collect data at a fixed frequency, so the timestamp alignment can be done
+data_dt = 0.005
+reference_model_dt = 0.1
+buffer_span = int(reference_model_dt / data_dt)
 
 # initialization of the residual lcs, all to be zeros and can be first published
 A_res = np.zeros((num_velocity, num_state))
@@ -123,16 +128,14 @@ vn_curr_theta = np.concatenate([A_init,B_init,D_init,d_init,E_init,H_init,G_init
 # # mask option, enforcing the learning structure, the masked entry (0) would remain the initial value
 # A_mask = np.ones((num_velocity, num_state))
 # B_mask = np.ones((num_velocity, num_control))
+# A_mask = np.ones((num_velocity, num_state))
+# B_mask = np.ones((num_velocity, num_control))
 # D_mask = np.ones((num_velocity, num_lambda))
-# D_mask[:,0:2] = np.zeros((num_velocity, 2))
 # d_mask = np.ones(num_velocity)
 #
 # E_mask = np.ones((num_lambda, num_state))
-# E_mask[0:2,:] = np.zeros((2, num_state))
 # H_mask = np.ones((num_lambda, num_control))
-# H_mask[0:2,:] = np.zeros((2, num_control))
 # c_mask = np.ones(num_lambda)
-# c_mask[0:2] = 0
 #
 # # need to think carefully later about this part
 # G_mask = np.ones(int((num_lambda + 1) * num_lambda / 2))
@@ -146,22 +149,22 @@ d_mask = np.zeros(num_velocity)
 
 E_mask = np.zeros((num_lambda, num_state))
 H_mask = np.zeros((num_lambda, num_control))
-c_mask = np.zeros(num_lambda)
-c_mask[2] = 1
-c_mask[3] = 1
+c_mask = np.ones(num_lambda)
+# c_mask[2] = 1
+# c_mask[3] = 1
 
 G_mask = np.zeros(int((num_lambda + 1) * num_lambda / 2))
 S_mask = np.zeros((num_lambda,num_lambda))
 
 # establish the violation-based learner, assign weight for each residual
-F_stiffness = 0.0
-gamma = 1e-1
-epsilon = 1e0
+F_stiffness = 1e-2
+gamma = 2e-3
+epsilon = 1e-1
 Q_ee = 0 * np.eye(3)
 Q_br = 0 * np.eye(3)
 # Q_bp = np.eye(3)
-Q_bp = np.diag(np.array([1,1,1]))
-Q = scipy.linalg.block_diag(Q_ee,Q_br,Q_bp)
+Q_bp = np.diag(np.array([1, 1, 1]))
+Q = scipy.linalg.block_diag(Q_ee, Q_br, Q_bp)
 
 # pdb.set_trace()
 vn_learner = lcs_class_state_dep_vel.LCS_VN(n_state=num_state, n_control=num_control, n_lam=num_lambda, n_vel=num_velocity,
@@ -172,13 +175,18 @@ vn_learner.diff(gamma=gamma, epsilon=epsilon, w_D=1e-6, D_ref=0, w_F=0e-6, F_ref
 
 # establish the optimizer
 # vn_learning_rate = 0.1e-5
-vn_learning_rate = 0.1e-4
+vn_learning_rate = 5e-4
 vn_optimizier = opt.Adam()
 vn_optimizier.learning_rate = vn_learning_rate
 
 # training loop
+# using qp
 max_iter = 10
 mini_batch_size = 10
+
+# # using ipopt
+# max_iter = 1
+# mini_batch_size = 1
 
 # storing loss
 total_loss_list = []
@@ -223,17 +231,19 @@ def learning():
         msg.c = c_res
 
         lc_publish.publish("RESIDUAL_LCS", msg.encode())
-        if len(lcm_data.state_list) < (cnt+1)*mini_batch_size + 1:
+        if len(lcm_data.state_list) < (cnt+1)*mini_batch_size + buffer_span:
             continue
         else:
             start_time = time.time()
             x_batch = np.array(lcm_data.state_list[cnt*mini_batch_size: (cnt+1)*mini_batch_size])
             u_batch = np.array(lcm_data.input_list[cnt*mini_batch_size: (cnt+1)*mini_batch_size])
             x_pred_batch = np.array(lcm_data.state_pred_list[cnt*mini_batch_size: (cnt+1)*mini_batch_size])
-            x_next_batch = np.array(lcm_data.state_list[cnt*mini_batch_size + 1: (cnt+1)*mini_batch_size + 1])
+            x_next_batch = np.array(lcm_data.state_list[cnt*mini_batch_size + buffer_span: (cnt+1)*mini_batch_size + buffer_span])
             res_batch = x_next_batch[:,num_state-num_velocity:] - x_pred_batch
-            # if cnt > 100:
+            # if cnt > 10:
             #     res_batch[:,8]= np.zeros(mini_batch_size)
+            # print(np.array(lcm_data.timestamp_list[cnt*mini_batch_size + buffer_span: (cnt+1)*mini_batch_size + buffer_span])\
+            #       -np.array(lcm_data.timestamp_list[cnt*mini_batch_size: (cnt+1)*mini_batch_size])-0.1)
             # pdb.set_trace()
             # pdb.set_trace()
             # print(cnt*mini_batch_size + 1)
@@ -322,7 +332,7 @@ def visualization():
 
 data_process = threading.Thread(target=data_grabbing)
 learning_process = threading.Thread(target=learning)
-visualization_data = threading.Thread(target=visualization)
+# visualization_data = threading.Thread(target=visualization)
 
 data_process.start()
 learning_process.start()
