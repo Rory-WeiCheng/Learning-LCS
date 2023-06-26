@@ -7,13 +7,12 @@ sys.path = ['/usr/rory-workspace/Learning-LCS/c3_velocity', '/usr/rory-workspace
 
 import lcs_class_state_dep_vel
 import lcs.optim as opt
-# from lcs import optim as opt
 import numpy as np
 import scipy
 import time
 import pdb
 import lcm
-from lcm_types.lcm_adaptive import lcmt_lcs, lcmt_robot_output, lcmt_c3, lcmt_learning_data
+from lcm_types.lcm_adaptive import lcmt_lcs, lcmt_learning_data, lcmt_visual
 import threading
 import matplotlib.pyplot as plt
 
@@ -22,11 +21,6 @@ num_state = 19
 num_velocity = 9
 num_control = 3
 num_lambda = 8
-
-# currently, collect data at a fixed frequency, so the timestamp alignment can be done
-data_dt = 0.005
-reference_model_dt = 0.1
-buffer_span = int(reference_model_dt / data_dt)
 
 # initialization of the residual lcs, all to be zeros and can be first published
 A_res = np.zeros((num_velocity, num_state))
@@ -39,7 +33,15 @@ F_res = np.zeros((num_lambda, num_lambda))
 H_res = np.zeros((num_lambda, num_control))
 c_res = np.zeros(num_lambda)
 
+# initialization of the checking and visualization data
+c_grad = np.zeros(8)
+lambda_check = np.zeros(8)
+res_check= np.zeros(9)
+lambda_n_check = np.zeros(1)
+
 ############################################## LCM and data buffer setting #############################################
+# define a data buffer class that keeps taking in the data and is growing
+# currently through keep appending the list, might run out of the cache
 class LCM_data_buffer:
     def __init__(self):
         self.lc = lcm.LCM()
@@ -59,16 +61,18 @@ class LCM_data_buffer:
         self.state_pred_list = []
 
         self.timestamp_list = []
+        # initialization of the settling time
         self.settling_time = 0
 
     def learning_data_receiver(self, channel, data):
         # decode message
         msg = lcmt_learning_data.decode(data)
 
+        # if not reaching settling time (have nor started), then don't grab data
         if msg.utime * 1e-6 < msg.settling_time:
             return
         else:
-            # grab data and store in the list
+            # grab data and store in the predefined list
             self.A_list.append(np.array(msg.A))
             self.B_list.append(np.array(msg.B))
             self.D_list.append(np.array(msg.D))
@@ -86,27 +90,16 @@ class LCM_data_buffer:
             self.timestamp_list.append(msg.utime * 1e-6)
             self.settling_time = msg.settling_time
 
-
-    # def lcs_receiver(self, channel, data):
-    #     msg = lcmt_lcs.decode(data)
-    #     self.A_list.append = np.array(msg.A)
-    #
-    # def c3_input_receiver(self,channel, data):
-    #     msg = lcmt_c3.decode(data)
-    #     c3_input = np.array(msg.data[-3:])
-    #     self.input_list.append(c3_input)
-    #
-    # def robot_state_receiver(self,channel, data):
-    #     msg = lcmt_robot_output.decode(data)
-    #     position = np.array(msg.position)
-    #     self.state_list.append(position)
-
+# create and initialize the data buffer for further use
 lcm_data = LCM_data_buffer()
-subscription_robot_output = lcm_data.lc.subscribe("LEARNING_DATASET", lcm_data.learning_data_receiver)
+# subscribe the channel that contains the learning data set
+subscription_learning_dataset = lcm_data.lc.subscribe("LEARNING_DATASET", lcm_data.learning_data_receiver)
+# prepare to lcm publish object, one is to publish the learned lcs
+# the other is used to publish the data that needs to visualize for sanity check
 lc_publish = lcm.LCM()
+lc_visual_publish = lcm.LCM()
 
 ############################################## Learner setting #########################################################
-training_data_size = 100
 cnt = 0
 
 # warm start options
@@ -119,102 +112,105 @@ E_init = np.zeros(num_lambda * num_state)
 F_init = np.zeros(num_lambda * num_lambda)
 H_init = np.zeros(num_lambda * num_control)
 c_init = np.zeros(num_lambda)
-# reparameterization part F divided into G and H_re
+
+# reparameterization part F divided into G (upper triangular) and S (skew symmetric)
 G_init = np.zeros(int((num_lambda + 1) * num_lambda / 2))
 S_init = np.zeros(num_lambda * num_lambda)
 vn_curr_theta = np.concatenate([A_init,B_init,D_init,d_init,E_init,H_init,G_init,S_init,c_init])
-# pdb.set_trace()
 
-# # mask option, enforcing the learning structure, the masked entry (0) would remain the initial value
-# A_mask = np.ones((num_velocity, num_state))
-# B_mask = np.ones((num_velocity, num_control))
-# A_mask = np.ones((num_velocity, num_state))
-# B_mask = np.ones((num_velocity, num_control))
-# D_mask = np.ones((num_velocity, num_lambda))
-# d_mask = np.ones(num_velocity)
-#
-# E_mask = np.ones((num_lambda, num_state))
-# H_mask = np.ones((num_lambda, num_control))
-# c_mask = np.ones(num_lambda)
-#
-# # need to think carefully later about this part
-# G_mask = np.ones(int((num_lambda + 1) * num_lambda / 2))
-# S_mask = np.ones((num_lambda,num_lambda))
+# mask option, enforcing the learning structure, the masked entry (masked with 0) would remain the initial value.
 
-# # only learn c[2] and c[3]
 A_mask = np.zeros((num_velocity, num_state))
 B_mask = np.zeros((num_velocity, num_control))
 D_mask = np.zeros((num_velocity, num_lambda))
 d_mask = np.zeros(num_velocity)
+# d_mask = np.ones(num_velocity)
 
 E_mask = np.zeros((num_lambda, num_state))
 H_mask = np.zeros((num_lambda, num_control))
 c_mask = np.ones(num_lambda)
-# c_mask[2] = 1
-# c_mask[3] = 1
 
+# need to carefully think about this one
 G_mask = np.zeros(int((num_lambda + 1) * num_lambda / 2))
 S_mask = np.zeros((num_lambda,num_lambda))
 
-# establish the violation-based learner, assign weight for each residual
+# establish the violation-based learner, the main parameters are shown below
+# F_Stiffness enforce the F matrix to be PD (orginally can only guarantee PSD), need to tune
 F_stiffness = 1e-2
+# gamma should set to be gamma < F_Stiffness
 gamma = 2e-3
-epsilon = 1e-1
+# epsilon represent the weight put on LCP violation part (weight is 1/epsilon)
+epsilon = 1e-2
+
+# also assign weight for each residual, now we only learn from ball velocity residuals
 Q_ee = 0 * np.eye(3)
 Q_br = 0 * np.eye(3)
-# Q_bp = np.eye(3)
 Q_bp = np.diag(np.array([1, 1, 1]))
 Q = scipy.linalg.block_diag(Q_ee, Q_br, Q_bp)
 
-# pdb.set_trace()
+# initialize the learning, warning would rise if dimension does not match
 vn_learner = lcs_class_state_dep_vel.LCS_VN(n_state=num_state, n_control=num_control, n_lam=num_lambda, n_vel=num_velocity,
                                             F_stiffness=F_stiffness, Q=Q, A_mask=A_mask, B_mask=B_mask, D_mask=D_mask,
                                             dyn_offset_mask=d_mask, E_mask=E_mask, H_mask=H_mask, G_mask=G_mask, S_mask=S_mask,
                                             lcp_offset_mask=c_mask)
 vn_learner.diff(gamma=gamma, epsilon=epsilon, w_D=1e-6, D_ref=0, w_F=0e-6, F_ref=0)
 
-# establish the optimizer
-# vn_learning_rate = 0.1e-5
-vn_learning_rate = 5e-4
+# establish the optimizer, currently choose the Adam gradient descent method
+vn_learning_rate = 1e-2
 vn_optimizier = opt.Adam()
 vn_optimizier.learning_rate = vn_learning_rate
 
-# training loop
-# using qp
-max_iter = 10
+# currently, collect data at a fixed frequency, so the timestamp alignment can be done through index search
+data_dt = 0.005
+reference_model_dt = 0.1
+index_span = int(reference_model_dt / data_dt)
+
+# training loop settings
+# mini_batch is done by batch computing in casadi, the batch corresponds to the time period of data_dt * mini_batch_size
 mini_batch_size = 10
+# max_iter is the time to do gradient steps for this batch data
+max_iter = 1
 
-# # using ipopt
-# max_iter = 1
-# mini_batch_size = 1
+# gradient buffer setting, the gradient update would use the average of the gradient buffer to update to ensure that the
+# contact prediction information is inlcluded
+# time span of the gradient buffer, should be determined by analyzing the gradient distribution
+buffer_time = 2
+# buffer size should be determined by buffer_time, max_iter, mini_batch_size, data_dt
+buffer_size = buffer_time * max_iter / (mini_batch_size * data_dt)
+grad_buffer = np.zeros((563, int(buffer_size)))
 
-# storing loss
+# storing the loss in the list for offline analysis
 total_loss_list = []
 dyn_loss_list = []
 lcp_loss_list = []
 theta_learnt_list = []
 
-########################################## multiple processing #########################################################
+########################################## multiple thread #############################################################
+# use multiple threads parallel to keep grabbing data while not hindering the learning
+# the above defined variables should be declared as global in the following function, check this first when debugging!
 def data_grabbing():
+    # data grabbing function
     global lcm_data
     global cnt
     while True:
         lcm_data.lc.handle()
-        # if cnt == 100:
-        #     pdb.set_trace()
 
 def learning():
     global cnt
-    global num_state,num_velocity,num_control,num_lambda
-    global A_res,B_res,D_res,d_res,E_res,F_res,H_res,c_res
+    global num_state, num_velocity, num_control, num_lambda
+    global A_res, B_res, D_res, d_res, E_res, F_res, H_res, c_res
     global max_iter, mini_batch_size, Q
     global vn_learner, vn_optimizier, vn_curr_theta
-    global lcm_data, lc_publish
+    global lcm_data, lc_publish, lc_visual_publish
     global total_loss_list, dyn_loss_list, lcp_loss_list, theta_learnt_list
+    global grad_buffer, buffer_size
+    global c_grad, lambda_check, res_check, lambda_n_check
 
     while True:
-        ## publishing test
+        # keep publishing the data
         msg = lcmt_lcs()
+        msg_visual = lcmt_visual()
+
         msg.num_state = num_state
         msg.num_velocity = num_velocity
         msg.num_control = num_control
@@ -230,24 +226,24 @@ def learning():
         msg.H = H_res
         msg.c = c_res
 
+        msg_visual.c_grad = c_grad
+        msg_visual.lambda_check = lambda_check
+        msg_visual.res_check = res_check
+        msg_visual.lambda_n = lambda_n_check
+
         lc_publish.publish("RESIDUAL_LCS", msg.encode())
-        if len(lcm_data.state_list) < (cnt+1)*mini_batch_size + buffer_span:
+        lc_visual_publish.publish("DATA_CHECKING", msg_visual.encode())
+        if len(lcm_data.state_list) < (cnt+1)*mini_batch_size + index_span:
             continue
         else:
             start_time = time.time()
+            # get batch data (horizon data_dt * mini_batch_size) and data in the future (reference_model_dt)
             x_batch = np.array(lcm_data.state_list[cnt*mini_batch_size: (cnt+1)*mini_batch_size])
             u_batch = np.array(lcm_data.input_list[cnt*mini_batch_size: (cnt+1)*mini_batch_size])
             x_pred_batch = np.array(lcm_data.state_pred_list[cnt*mini_batch_size: (cnt+1)*mini_batch_size])
-            x_next_batch = np.array(lcm_data.state_list[cnt*mini_batch_size + buffer_span: (cnt+1)*mini_batch_size + buffer_span])
+            x_next_batch = np.array(lcm_data.state_list[cnt*mini_batch_size + index_span: (cnt+1)*mini_batch_size + index_span])
             res_batch = x_next_batch[:,num_state-num_velocity:] - x_pred_batch
-            # if cnt > 10:
-            #     res_batch[:,8]= np.zeros(mini_batch_size)
-            # print(np.array(lcm_data.timestamp_list[cnt*mini_batch_size + buffer_span: (cnt+1)*mini_batch_size + buffer_span])\
-            #       -np.array(lcm_data.timestamp_list[cnt*mini_batch_size: (cnt+1)*mini_batch_size])-0.1)
-            # pdb.set_trace()
-            # pdb.set_trace()
-            # print(cnt*mini_batch_size + 1)
-            # print((cnt+1)*mini_batch_size + 1)
+            res_check = np.mean(res_batch, axis = 0)
 
             A_batch = np.zeros((num_velocity, mini_batch_size * num_state))
             B_batch = np.zeros((num_velocity, mini_batch_size * num_control))
@@ -262,11 +258,23 @@ def learning():
             end_data_time = time.time()
 
             for iter in range(max_iter):
-                vn_mean_loss, vn_dtheta, vn_dyn_loss, vn_lcp_loss, _ = vn_learner.step(batch_x=x_batch, batch_u=u_batch,
+                vn_mean_loss, vn_dtheta, vn_dyn_loss, vn_lcp_loss, lam_batch = vn_learner.step(batch_x=x_batch, batch_u=u_batch,
                     batch_x_next=res_batch, current_theta=vn_curr_theta, batch_A=A_batch, batch_B=B_batch, batch_D=D_batch,
                     batch_dynamic_offset=d_batch, batch_E=E_batch, batch_H=H_batch, batch_F=F_batch, batch_lcp_offset=c_batch)
-                vn_curr_theta = vn_optimizier.step(vn_curr_theta, vn_dtheta)
-                # pdb.set_trace()
+
+                # store the history gradient
+                grad_buffer[:, 1:] = grad_buffer[:, 0:-1]
+                np.set_printoptions(linewidth=450)
+                grad_buffer[:, 0] = vn_dtheta
+
+                # update gradient using the average gradient in gradient buffer
+                vn_dtheta_update = np.mean(grad_buffer, axis=1)
+                # vn_curr_theta = vn_optimizier.step(vn_curr_theta, vn_dtheta_update) # comment this if do not want learning
+
+                # data for sanity checking
+                c_grad = vn_dtheta[-8:]
+                lambda_check = np.mean(lam_batch, axis=0)
+                lambda_n_check = np.sum(lambda_check[0:4])
 
             theta_learnt_list.append(vn_curr_theta)
             total_loss_list.append(vn_mean_loss)
@@ -274,10 +282,9 @@ def learning():
             lcp_loss_list.append(vn_lcp_loss)
 
             # print('iter:', iter, 'vn_loss: ', vn_mean_loss, 'vn_dyn_loss: ', vn_dyn_loss, 'vn_lcp_loss', vn_lcp_loss)
-            # pdb.set_trace()
 
+            # convert the learnt parameters into matrices, comment this if do not want learning
             Start_LCSdata_time = time.time()
-
             A_res = vn_learner.A_fn(vn_curr_theta).full()
             B_res = vn_learner.B_fn(vn_curr_theta).full()
             D_res = vn_learner.D_fn(vn_curr_theta).full()
@@ -288,48 +295,30 @@ def learning():
             c_res = vn_learner.lcp_offset_fn(vn_curr_theta).full()
 
             end_time = time.time()
+            # counter add on
             cnt = cnt + 1
-        #     # print(cnt)
-        #     # print("Learning Time：", end_time - start_time)
-        #     # print("Data Time：", end_data_time - start_time + end_time - Start_LCSdata_time)
-        #     # print(cnt*mini_batch_size)
-        #     # print((cnt+1)*mini_batch_size)
+
+            # check the time for each loop
+            # print(cnt)
+            # print("Learning Time：", end_time - start_time)
+            # print("Data Time：", end_data_time - start_time + end_time - Start_LCSdata_time)
+            # print(cnt*mini_batch_size)
+            # print((cnt+1)*mini_batch_size)
 
 def visualization():
-    global cnt
+    global cnt, buffer_size
     global mini_batch_size
     global lcm_data
     global total_loss_list, dyn_loss_list, lcp_loss_list, theta_learnt_list
-    plt.figure(figsize=(24, 16))
-    plt.ion()
+    # plotting helper function that plot the curve if necessary, not recomended, might slow down program, use lcmspy
+    # plt.ion()
     while True:
-        if len(lcm_data.state_list) > 3:
-            plt.clf()
-            plot_length = len(lcm_data.state_list)-1
-            x_pred_all = np.array(lcm_data.state_pred_list[0:plot_length])
-            x_next_all = np.array(lcm_data.state_list[1:plot_length+1])
-            # pdb.set_trace()
-            res_all = x_next_all[:,num_state-num_velocity:] - x_pred_all
-            # pdb.set_trace()
-            plt.subplot(3, 1, 1)
-            plt.plot(res_all[:,6],label='ball vx res')
-            plt.legend(fontsize=20)
-            plt.subplot(3, 1, 2)
-            plt.plot(res_all[:,7],label='ball vy res')
-            plt.legend(fontsize=20)
-            plt.subplot(3, 1, 3)
-            plt.plot(res_all[:,8],label='ball vz res')
-            plt.legend(fontsize=20)
-            plt.draw()
-            plt.pause(0.01)
-            # plt.plot(x_next_all[:,18],label='ball vz actual')
-            # plt.legend(fontsize=20)
-            # plt.plot(x_pred_all[:,8],label='ball vz pred')
-            # plt.legend(fontsize=20)
-            # plt.show()
-            # print(cnt)
+        if cnt > 400:
+            plt.plot(total_loss_list)
+            break
 
 
+# main part, excute multiple threads to run the learning and data grabbing (somtimes + plotting) at the same time
 data_process = threading.Thread(target=data_grabbing)
 learning_process = threading.Thread(target=learning)
 # visualization_data = threading.Thread(target=visualization)
@@ -337,4 +326,5 @@ learning_process = threading.Thread(target=learning)
 data_process.start()
 learning_process.start()
 # visualization_data.start()
+
 

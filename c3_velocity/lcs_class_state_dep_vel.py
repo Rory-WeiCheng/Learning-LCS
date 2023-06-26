@@ -72,8 +72,9 @@ class LCS_Gen:
         # establish the qp solver to solve for lcp
         xu_theta = vertcat(xu_theta_pair)
         quadprog = {'x': lam, 'f': lcp_loss, 'g': lcp_cstr, 'p': xu_theta}
-        opts = {'print_time': 0, 'osqp': {'verbose': False}}
-        self.lcpSolver = qpsol('lcpSolver', 'osqp', quadprog, opts)
+        # use QPOASES to get strict feasible solution
+        opts = {"print_time": 0, "printLevel": "none", "verbose": 0, 'error_on_fail': False}
+        self.qpSolver = qpsol('Solver_QP', 'qpoases', quadprog, opts)
 
     def nextState(self, x_batch, u_batch, batch_A, batch_B, batch_D, batch_dynamic_offset,
              batch_E, batch_H, batch_F, batch_lcp_offset):
@@ -112,15 +113,6 @@ class LCS_VN:
         self.n_control = n_control
         self.n_lam = n_lam
         self.n_vel = n_vel
-        # 2023.6.9 sanity check
-        self.lameeb_list = []
-        self.phieeb_list = []
-        self.grad_ceeblist = []
-        self.lambg_list = []
-        self.phibg_list = []
-        self.grad_cbglist = []
-        self.eigen_list = []
-        self.cnt = 0
 
         # weighting matrix for prediction loss
         self.Q = Q
@@ -236,7 +228,7 @@ class LCS_VN:
         self.theta_mask = vcat(self.mask_para)
         self.n_theta_mask = self.theta_mask.numel()
         if not (self.n_theta_mask == self.n_theta):
-            raise Exception('check the parameter and mask consistency')
+            raise Exception('check the parameter and mask dimension consistency')
 
     def toMatG(self, G_para):
 
@@ -331,7 +323,12 @@ class LCS_VN:
 
         quadprog = {'x': lam_phi, 'f': total_loss, 'p': data_theta}
 
-        # OSQP
+        # # NLP (for Stwart-Trinkle)
+        # nonlinprog = {'x': lam_phi, 'f': total_loss, 'p': data_theta}
+        # opts = {'print_time': 0, 'ipopt': {'print_level': 0},'error_on_fail': False}
+        # self.nlpSolver = nlpsol('Solver_NLP', 'ipopt', nonlinprog, opts)
+
+        # # OSQP
         # opts = {'print_time': 0, 'osqp': {'verbose': False}, 'error_on_fail': False}
         # opts = {'print_time': 0, 'osqp': {'verbose': False, 'eps_rel': 1e-8},'error_on_fail':False}
         # self.qpSolver = qpsol('Solver_QP', 'osqp', quadprog, opts)
@@ -340,9 +337,6 @@ class LCS_VN:
         opts = {"print_time": 0, "printLevel": "none", "verbose": 0, 'error_on_fail': False}
         self.qpSolver = qpsol('Solver_QP', 'qpoases', quadprog, opts)
 
-        nonlinprog = {'x': lam_phi, 'f': total_loss, 'p': data_theta}
-        opts = {'print_time': 0, 'ipopt': {'print_level': 0},'error_on_fail': False}
-        self.nlpSolver = nlpsol('Solver_NLP', 'ipopt', nonlinprog, opts)
 
         # compute the jacobian from lam to theta
         mu = SX.sym('mu', self.n_lam + self.n_lam)
@@ -393,62 +387,15 @@ class LCS_VN:
         dtheta_batch, dyn_loss_batch, lcp_loss_batch, = self.loss_fn(data_batch.T, lam_phi_batch, mu_batch,
                                                                      current_theta, theta_M_batch.T)
 
-        # # # 2023.6.9 sanity check
-        # gradc = self.lcp_offset_fn(dtheta_batch).full()
-        # if np.all(gradc==0):
-        #     pass
-        # else:
-        #     np.set_printoptions(linewidth=400)
-        #     self.lameeb_list.append(lam_batch[0])
-        #     self.lambg_list.append(lam_batch[4])
-        #     self.phieeb_list.append(phi_batch[0])
-        #     self.phibg_list.append(phi_batch[4])
-        #     self.grad_ceeblist.append(gradc[0])
-        #     self.grad_cbglist.append(gradc[4])
-        #     self.cnt = self.cnt + 1
-        #     Quad = self.Form_Quadratic_casadi(current_theta,theta_M_batch.T).full()
-        #     EigenValue = np.min(np.linalg.eigvals(Quad))
-        #     self.eigen_list.append(EigenValue)
-        # if self.cnt == 10000:
-        #     print('lambda[0] min')
-        #     print(min(self.lameeb_list))
-        #     print('phi[0] min')
-        #     print(min(self.phieeb_list))
-        #     print('lambda[4] min')
-        #     print(min(self.lambg_list))
-        #     print('phi[4] min')
-        #     print(min(self.phibg_list))
-        #     print('eigenvalue min')
-        #     print(min(self.eigen_list))
-        #     import matplotlib.pyplot as plt
-        #     plt.figure(figsize=(24, 16))
-        #     plt.plot(self.lameeb_list,label="lam[0]")
-        #     plt.plot(self.phieeb_list,label="phi[0]")
-        #     plt.legend()
-        #     plt.figure(figsize=(24, 16))
-        #     plt.plot(self.lambg_list, label="lam[4]")
-        #     plt.plot(self.phibg_list, label="phi[4]")
-        #     plt.legend()
-        #     plt.figure(figsize=(24, 16))
-        #     plt.plot(self.grad_ceeblist,label="gradc[0]")
-        #     plt.legend()
-        #     plt.figure(figsize=(24, 16))
-        #     plt.plot(self.grad_cbglist, label="gradc[4]")
-        #     plt.legend()
-        #     plt.figure(figsize=(24, 16))
-        #     plt.plot(self.eigen_list, label="min eigenvalue of Quadratic Term")
-        #     plt.legend()
-        #     plt.show()
-        #
-        #     pdb.set_trace()
-
-        # do the update of gradient descent
-        mean_loss = loss_batch.mean()
+        # calculate the average of the batch gradient for the update of gradient descent
         # mean_dtheta = dtheta_batch.full().mean(axis=1)
+        mean_loss = loss_batch.mean()
         mean_dtheta = dtheta_batch.full()
-        # gradient magnitude filtering
-        # mean_dtheta = np.where(abs(mean_dtheta)>1e-7,mean_dtheta,0)
+
+        # gradient magnitude filtering, need to analyze the distribution of gradient
+        mean_dtheta = np.where(abs(mean_dtheta)>1e-5, mean_dtheta, 0)
         mean_dtheta = mean_dtheta.mean(axis=1)
+
         mean_dyn_loss = dyn_loss_batch.full().mean()
         mean_lcp_loss = lcp_loss_batch.full().mean()
 

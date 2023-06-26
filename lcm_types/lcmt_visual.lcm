@@ -1,0 +1,10 @@
+package lcm_adaptive;
+/*  lcmtype that checks the gradients etc.  */
+
+struct lcmt_visual
+{
+  double c_grad[8];
+  double lambda_check[8];
+  double res_check[9];
+  double lambda_n;
+}
