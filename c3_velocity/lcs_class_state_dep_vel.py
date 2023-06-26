@@ -286,6 +286,7 @@ class LCS_VN:
 
         # dynamics
         dyn = (self.A + A_M) @ x + (self.B + B_M) @ u + (self.D + D_M) @ lam + (self.dyn_offset + dyn_offset_M)
+        dyn_error = dyn - x_next
         if self.Q is None:
             dyn_loss = 0.5 * dot(dyn - x_next, dyn - x_next)
         else:
@@ -293,6 +294,7 @@ class LCS_VN:
 
         # lcp loss
         dist = (self.E + E_M) @ x + (self.H + H_M) @ u + (self.F + F_M) @ lam + (self.lcp_offset + lcp_offset_M)
+        lcp_error = dist - phi
         lcp_aug_loss = dot(lam, phi) + 0.5 * 1 / gamma * dot(phi - dist, phi - dist)
 
         # define loss function
@@ -347,7 +349,7 @@ class LCS_VN:
                         w_D * dot(vec(DM(D_ref)) - vec(self.D), vec(DM(D_ref)) - vec(self.D)) + \
                         w_F * dot(vec(DM(F_ref)) - vec(self.F), vec(DM(F_ref)) - vec(self.F))
         self.loss_fn = Function('loss_fn', [data_pair, lam_phi, mu, self.theta, theta_M],
-                                [jacobian(L, self.theta).T*self.theta_mask, dyn_loss_plus, lcp_aug_loss])
+                                [jacobian(L, self.theta).T*self.theta_mask, dyn_loss_plus, lcp_aug_loss, dyn_error, lcp_error])
         # pdb.set_trace()
 
     def step(self, batch_x, batch_u, batch_x_next, current_theta, batch_A, batch_B, batch_D, batch_dynamic_offset,
@@ -384,8 +386,8 @@ class LCS_VN:
 
         # solve the gradient
         # start_gradient_time = time.time()
-        dtheta_batch, dyn_loss_batch, lcp_loss_batch, = self.loss_fn(data_batch.T, lam_phi_batch, mu_batch,
-                                                                     current_theta, theta_M_batch.T)
+        dtheta_batch, dyn_loss_batch, lcp_loss_batch, dyn_error_batch, lcp_error_batch = \
+            self.loss_fn(data_batch.T, lam_phi_batch, mu_batch, current_theta, theta_M_batch.T)
 
         # calculate the average of the batch gradient for the update of gradient descent
         # mean_dtheta = dtheta_batch.full().mean(axis=1)
@@ -399,4 +401,4 @@ class LCS_VN:
         mean_dyn_loss = dyn_loss_batch.full().mean()
         mean_lcp_loss = lcp_loss_batch.full().mean()
 
-        return mean_loss, mean_dtheta, mean_dyn_loss, mean_lcp_loss, lam_batch.T
+        return mean_loss, mean_dtheta, mean_dyn_loss, mean_lcp_loss, lam_batch.T, dyn_error_batch.T, lcp_error_batch.T

@@ -34,10 +34,13 @@ H_res = np.zeros((num_lambda, num_control))
 c_res = np.zeros(num_lambda)
 
 # initialization of the checking and visualization data
-c_grad = np.zeros(8)
-lambda_check = np.zeros(8)
-res_check= np.zeros(9)
-lambda_n_check = np.zeros(1)
+c_grad = np.zeros(num_lambda)
+d_grad = np.zeros(num_velocity)
+dyn_error_check = np.zeros(num_velocity)
+lcp_error_check = np.zeros(num_lambda)
+lambda_check = np.zeros(num_lambda)
+res_check= np.zeros(num_velocity)
+lambda_n_check = np.zeros(2)
 
 ############################################## LCM and data buffer setting #############################################
 # define a data buffer class that keeps taking in the data and is growing
@@ -204,13 +207,14 @@ def learning():
     global lcm_data, lc_publish, lc_visual_publish
     global total_loss_list, dyn_loss_list, lcp_loss_list, theta_learnt_list
     global grad_buffer, buffer_size
-    global c_grad, lambda_check, res_check, lambda_n_check
+    global c_grad, d_grad, dyn_error_check, lcp_error_check, lambda_check, res_check, lambda_n_check
 
     while True:
         # keep publishing the data
         msg = lcmt_lcs()
         msg_visual = lcmt_visual()
 
+        # for learned matrices publishing
         msg.num_state = num_state
         msg.num_velocity = num_velocity
         msg.num_control = num_control
@@ -226,14 +230,23 @@ def learning():
         msg.H = H_res
         msg.c = c_res
 
+        # for visualization and sanity check
+        msg_visual.num_velocity = num_velocity
+        msg_visual.num_lambda = num_lambda
+        msg_visual.d_grad = d_grad
         msg_visual.c_grad = c_grad
+        msg_visual.dyn_error_check = dyn_error_check
+        msg_visual.lcp_error_check = lcp_error_check
         msg_visual.lambda_check = lambda_check
         msg_visual.res_check = res_check
         msg_visual.lambda_n = lambda_n_check
 
+        # publish the message
         lc_publish.publish("RESIDUAL_LCS", msg.encode())
         lc_visual_publish.publish("DATA_CHECKING", msg_visual.encode())
+
         if len(lcm_data.state_list) < (cnt+1)*mini_batch_size + index_span:
+            # when data enough, start learning, or just send current result
             continue
         else:
             start_time = time.time()
@@ -258,9 +271,10 @@ def learning():
             end_data_time = time.time()
 
             for iter in range(max_iter):
-                vn_mean_loss, vn_dtheta, vn_dyn_loss, vn_lcp_loss, lam_batch = vn_learner.step(batch_x=x_batch, batch_u=u_batch,
-                    batch_x_next=res_batch, current_theta=vn_curr_theta, batch_A=A_batch, batch_B=B_batch, batch_D=D_batch,
-                    batch_dynamic_offset=d_batch, batch_E=E_batch, batch_H=H_batch, batch_F=F_batch, batch_lcp_offset=c_batch)
+                vn_mean_loss, vn_dtheta, vn_dyn_loss, vn_lcp_loss, lam_batch, dyn_error_batch, lcp_error_batch = \
+                    vn_learner.step(batch_x=x_batch, batch_u=u_batch, batch_x_next=res_batch, current_theta=vn_curr_theta,
+                                    batch_A=A_batch, batch_B=B_batch, batch_D=D_batch, batch_dynamic_offset=d_batch,
+                                    batch_E=E_batch, batch_H=H_batch, batch_F=F_batch, batch_lcp_offset=c_batch)
 
                 # store the history gradient
                 grad_buffer[:, 1:] = grad_buffer[:, 0:-1]
@@ -272,9 +286,13 @@ def learning():
                 # vn_curr_theta = vn_optimizier.step(vn_curr_theta, vn_dtheta_update) # comment this if do not want learning
 
                 # data for sanity checking
-                c_grad = vn_dtheta[-8:]
+                c_grad = vn_learner.lcp_offset_fn(vn_dtheta).full()
+                d_grad = vn_learner.dyn_offset_fn(vn_dtheta).full()
+                dyn_error_check = np.mean(dyn_error_batch, axis=0)
+                lcp_error_check = np.mean(lcp_error_batch, axis=0)
                 lambda_check = np.mean(lam_batch, axis=0)
-                lambda_n_check = np.sum(lambda_check[0:4])
+                lambda_n_check[0] = np.sum(lambda_check[0:4])
+                lambda_n_check[1] = np.sum(lambda_check[4:])
 
             theta_learnt_list.append(vn_curr_theta)
             total_loss_list.append(vn_mean_loss)
@@ -295,7 +313,7 @@ def learning():
             c_res = vn_learner.lcp_offset_fn(vn_curr_theta).full()
 
             end_time = time.time()
-            # counter add on
+            # counter add on to move to next data batch
             cnt = cnt + 1
 
             # check the time for each loop

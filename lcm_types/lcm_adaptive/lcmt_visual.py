@@ -10,17 +10,22 @@ except ImportError:
 import struct
 
 class lcmt_visual(object):
-    __slots__ = ["c_grad", "lambda_check", "res_check", "lambda_n"]
+    __slots__ = ["num_velocity", "num_lambda", "d_grad", "c_grad", "dyn_error_check", "lcp_error_check", "lambda_check", "res_check", "lambda_n"]
 
-    __typenames__ = ["double", "double", "double", "double"]
+    __typenames__ = ["int16_t", "int16_t", "double", "double", "double", "double", "double", "double", "double"]
 
-    __dimensions__ = [[8], [8], [9], None]
+    __dimensions__ = [None, None, ["num_velocity"], ["num_lambda"], ["num_velocity"], ["num_lambda"], ["num_lambda"], ["num_velocity"], [2]]
 
     def __init__(self):
-        self.c_grad = [ 0.0 for dim0 in range(8) ]
-        self.lambda_check = [ 0.0 for dim0 in range(8) ]
-        self.res_check = [ 0.0 for dim0 in range(9) ]
-        self.lambda_n = 0.0
+        self.num_velocity = 0
+        self.num_lambda = 0
+        self.d_grad = []
+        self.c_grad = []
+        self.dyn_error_check = []
+        self.lcp_error_check = []
+        self.lambda_check = []
+        self.res_check = []
+        self.lambda_n = [ 0.0 for dim0 in range(2) ]
 
     def encode(self):
         buf = BytesIO()
@@ -29,10 +34,14 @@ class lcmt_visual(object):
         return buf.getvalue()
 
     def _encode_one(self, buf):
-        buf.write(struct.pack('>8d', *self.c_grad[:8]))
-        buf.write(struct.pack('>8d', *self.lambda_check[:8]))
-        buf.write(struct.pack('>9d', *self.res_check[:9]))
-        buf.write(struct.pack(">d", self.lambda_n))
+        buf.write(struct.pack(">hh", self.num_velocity, self.num_lambda))
+        buf.write(struct.pack('>%dd' % self.num_velocity, *self.d_grad[:self.num_velocity]))
+        buf.write(struct.pack('>%dd' % self.num_lambda, *self.c_grad[:self.num_lambda]))
+        buf.write(struct.pack('>%dd' % self.num_velocity, *self.dyn_error_check[:self.num_velocity]))
+        buf.write(struct.pack('>%dd' % self.num_lambda, *self.lcp_error_check[:self.num_lambda]))
+        buf.write(struct.pack('>%dd' % self.num_lambda, *self.lambda_check[:self.num_lambda]))
+        buf.write(struct.pack('>%dd' % self.num_velocity, *self.res_check[:self.num_velocity]))
+        buf.write(struct.pack('>2d', *self.lambda_n[:2]))
 
     def decode(data):
         if hasattr(data, 'read'):
@@ -46,16 +55,20 @@ class lcmt_visual(object):
 
     def _decode_one(buf):
         self = lcmt_visual()
-        self.c_grad = struct.unpack('>8d', buf.read(64))
-        self.lambda_check = struct.unpack('>8d', buf.read(64))
-        self.res_check = struct.unpack('>9d', buf.read(72))
-        self.lambda_n = struct.unpack(">d", buf.read(8))[0]
+        self.num_velocity, self.num_lambda = struct.unpack(">hh", buf.read(4))
+        self.d_grad = struct.unpack('>%dd' % self.num_velocity, buf.read(self.num_velocity * 8))
+        self.c_grad = struct.unpack('>%dd' % self.num_lambda, buf.read(self.num_lambda * 8))
+        self.dyn_error_check = struct.unpack('>%dd' % self.num_velocity, buf.read(self.num_velocity * 8))
+        self.lcp_error_check = struct.unpack('>%dd' % self.num_lambda, buf.read(self.num_lambda * 8))
+        self.lambda_check = struct.unpack('>%dd' % self.num_lambda, buf.read(self.num_lambda * 8))
+        self.res_check = struct.unpack('>%dd' % self.num_velocity, buf.read(self.num_velocity * 8))
+        self.lambda_n = struct.unpack('>2d', buf.read(16))
         return self
     _decode_one = staticmethod(_decode_one)
 
     def _get_hash_recursive(parents):
         if lcmt_visual in parents: return 0
-        tmphash = (0xe218efd770d7659c) & 0xffffffffffffffff
+        tmphash = (0x32f97b743816eed0) & 0xffffffffffffffff
         tmphash  = (((tmphash<<1)&0xffffffffffffffff) + (tmphash>>63)) & 0xffffffffffffffff
         return tmphash
     _get_hash_recursive = staticmethod(_get_hash_recursive)
