@@ -36,11 +36,17 @@ c_res = np.zeros(num_lambda)
 # initialization of the checking and visualization data
 c_grad = np.zeros(num_lambda)
 d_grad = np.zeros(num_velocity)
+
 dyn_error_check = np.zeros(num_velocity)
 lcp_error_check = np.zeros(num_lambda)
 lambda_check = np.zeros(num_lambda)
 res_check= np.zeros(num_velocity)
 lambda_n_check = np.zeros(2)
+Dlambda_check = np.zeros(num_velocity)
+
+total_loss_check = np.zeros(1)
+dyn_loss_check = np.zeros(1)
+lcp_loss_check = np.zeros(1)
 
 ############################################## LCM and data buffer setting #############################################
 # define a data buffer class that keeps taking in the data and is growing
@@ -129,25 +135,27 @@ D_mask = np.zeros((num_velocity, num_lambda))
 d_mask = np.zeros(num_velocity)
 # d_mask = np.ones(num_velocity)
 
-E_mask = np.zeros((num_lambda, num_state))
-H_mask = np.zeros((num_lambda, num_control))
+E_mask = np.ones((num_lambda, num_state))
+H_mask = np.ones((num_lambda, num_control))
 c_mask = np.ones(num_lambda)
 
 # need to carefully think about this one
-G_mask = np.zeros(int((num_lambda + 1) * num_lambda / 2))
-S_mask = np.zeros((num_lambda,num_lambda))
+G_mask = np.ones(int((num_lambda + 1) * num_lambda / 2))
+S_mask = np.ones((num_lambda,num_lambda))
 
 # establish the violation-based learner, the main parameters are shown below
 # F_Stiffness enforce the F matrix to be PD (orginally can only guarantee PSD), need to tune
 F_stiffness = 1e-2
 # gamma should set to be gamma < F_Stiffness
-gamma = 2e-3
+gamma = 1e-3
 # epsilon represent the weight put on LCP violation part (weight is 1/epsilon)
-epsilon = 1e-2
+epsilon = 1
 
 # also assign weight for each residual, now we only learn from ball velocity residuals
 Q_ee = 0 * np.eye(3)
+# Q_ee = np.diag(np.array([1, 1, 1]))
 Q_br = 0 * np.eye(3)
+# Q_br = np.diag(np.array([1, 1, 1]))
 Q_bp = np.diag(np.array([1, 1, 1]))
 Q = scipy.linalg.block_diag(Q_ee, Q_br, Q_bp)
 
@@ -159,7 +167,7 @@ vn_learner = lcs_class_state_dep_vel.LCS_VN(n_state=num_state, n_control=num_con
 vn_learner.diff(gamma=gamma, epsilon=epsilon, w_D=1e-6, D_ref=0, w_F=0e-6, F_ref=0)
 
 # establish the optimizer, currently choose the Adam gradient descent method
-vn_learning_rate = 1e-2
+vn_learning_rate = 1e-3
 vn_optimizier = opt.Adam()
 vn_optimizier.learning_rate = vn_learning_rate
 
@@ -172,21 +180,31 @@ index_span = int(reference_model_dt / data_dt)
 # mini_batch is done by batch computing in casadi, the batch corresponds to the time period of data_dt * mini_batch_size
 mini_batch_size = 10
 # max_iter is the time to do gradient steps for this batch data
-max_iter = 1
+max_iter = 10
 
 # gradient buffer setting, the gradient update would use the average of the gradient buffer to update to ensure that the
 # contact prediction information is inlcluded
 # time span of the gradient buffer, should be determined by analyzing the gradient distribution
-buffer_time = 2
-# buffer size should be determined by buffer_time, max_iter, mini_batch_size, data_dt
-buffer_size = buffer_time * max_iter / (mini_batch_size * data_dt)
-grad_buffer = np.zeros((563, int(buffer_size)))
+# buffer_time = 1
+# # buffer size should be determined by buffer_time, max_iter, mini_batch_size, data_dt
+# buffer_size = buffer_time * max_iter / (mini_batch_size * data_dt)
+# grad_buffer = np.zeros((vn_learner.n_theta, int(buffer_size)))
 
 # storing the loss in the list for offline analysis
 total_loss_list = []
 dyn_loss_list = []
 lcp_loss_list = []
 theta_learnt_list = []
+np.set_printoptions(linewidth=450)
+
+# # for visualization in the meeting
+# c_grad_list = []
+# d_grad_list = []
+# dyn_error_check_list = []
+# lcp_error_check_list = []
+# lambda_check_list = []
+# lambda_n_check_list= []
+
 
 ########################################## multiple thread #############################################################
 # use multiple threads parallel to keep grabbing data while not hindering the learning
@@ -207,7 +225,8 @@ def learning():
     global lcm_data, lc_publish, lc_visual_publish
     global total_loss_list, dyn_loss_list, lcp_loss_list, theta_learnt_list
     global grad_buffer, buffer_size
-    global c_grad, d_grad, dyn_error_check, lcp_error_check, lambda_check, res_check, lambda_n_check
+    global c_grad, d_grad, dyn_error_check, lcp_error_check, lambda_check, res_check, lambda_n_check, Dlambda_check
+    global total_loss_check, dyn_loss_check, lcp_loss_check
 
     while True:
         # keep publishing the data
@@ -233,13 +252,20 @@ def learning():
         # for visualization and sanity check
         msg_visual.num_velocity = num_velocity
         msg_visual.num_lambda = num_lambda
+
         msg_visual.d_grad = d_grad
         msg_visual.c_grad = c_grad
+
         msg_visual.dyn_error_check = dyn_error_check
         msg_visual.lcp_error_check = lcp_error_check
         msg_visual.lambda_check = lambda_check
         msg_visual.res_check = res_check
         msg_visual.lambda_n = lambda_n_check
+        msg_visual.Dlambda_check = Dlambda_check
+
+        msg_visual.total_loss = total_loss_check
+        msg_visual.dyn_loss = dyn_loss_check
+        msg_visual.lcp_loss = lcp_loss_check
 
         # publish the message
         lc_publish.publish("RESIDUAL_LCS", msg.encode())
@@ -268,22 +294,19 @@ def learning():
             H_batch = np.array(lcm_data.H_list[cnt*mini_batch_size: (cnt+1)*mini_batch_size]).swapaxes(0, 1).reshape(num_lambda, -1)
             c_batch = np.array(lcm_data.c_list[cnt*mini_batch_size: (cnt+1)*mini_batch_size]).T
 
+            # print(np.array(
+            #     lcm_data.timestamp_list[cnt * mini_batch_size + index_span: (cnt + 1) * mini_batch_size + index_span]) \
+            #               -np.array(lcm_data.timestamp_list[cnt*mini_batch_size: (cnt+1)*mini_batch_size]))
+
             end_data_time = time.time()
 
             for iter in range(max_iter):
-                vn_mean_loss, vn_dtheta, vn_dyn_loss, vn_lcp_loss, lam_batch, dyn_error_batch, lcp_error_batch = \
+                vn_mean_loss, vn_dtheta, vn_dyn_loss, vn_lcp_loss, lam_batch, dyn_error_batch, lcp_error_batch, Dlambda_mean = \
                     vn_learner.step(batch_x=x_batch, batch_u=u_batch, batch_x_next=res_batch, current_theta=vn_curr_theta,
                                     batch_A=A_batch, batch_B=B_batch, batch_D=D_batch, batch_dynamic_offset=d_batch,
                                     batch_E=E_batch, batch_H=H_batch, batch_F=F_batch, batch_lcp_offset=c_batch)
 
-                # store the history gradient
-                grad_buffer[:, 1:] = grad_buffer[:, 0:-1]
-                np.set_printoptions(linewidth=450)
-                grad_buffer[:, 0] = vn_dtheta
-
-                # update gradient using the average gradient in gradient buffer
-                vn_dtheta_update = np.mean(grad_buffer, axis=1)
-                # vn_curr_theta = vn_optimizier.step(vn_curr_theta, vn_dtheta_update) # comment this if do not want learning
+                vn_curr_theta = vn_optimizier.step(vn_curr_theta, vn_dtheta) # comment this if do not want learning
 
                 # data for sanity checking
                 c_grad = vn_learner.lcp_offset_fn(vn_dtheta).full()
@@ -293,11 +316,17 @@ def learning():
                 lambda_check = np.mean(lam_batch, axis=0)
                 lambda_n_check[0] = np.sum(lambda_check[0:4])
                 lambda_n_check[1] = np.sum(lambda_check[4:])
+                Dlambda_check = Dlambda_mean
 
-            theta_learnt_list.append(vn_curr_theta)
-            total_loss_list.append(vn_mean_loss)
-            dyn_loss_list.append(vn_dyn_loss)
-            lcp_loss_list.append(vn_lcp_loss)
+
+            # store loss
+            # theta_learnt_list.append(vn_curr_theta)
+            # total_loss_list.append(vn_mean_loss)
+            # dyn_loss_list.append(vn_dyn_loss)
+            # lcp_loss_list.append(vn_lcp_loss)
+            total_loss_check = vn_mean_loss
+            # dyn_loss_check = vn_dyn_loss
+            lcp_loss_check = vn_lcp_loss
 
             # print('iter:', iter, 'vn_loss: ', vn_mean_loss, 'vn_dyn_loss: ', vn_dyn_loss, 'vn_lcp_loss', vn_lcp_loss)
 
@@ -328,11 +357,75 @@ def visualization():
     global mini_batch_size
     global lcm_data
     global total_loss_list, dyn_loss_list, lcp_loss_list, theta_learnt_list
+    # global c_grad_list, d_grad_list, dyn_error_check_list, lcp_error_check_list, lambda_check_list, lambda_n_check_lis
+
     # plotting helper function that plot the curve if necessary, not recomended, might slow down program, use lcmspy
     # plt.ion()
     while True:
-        if cnt > 400:
-            plt.plot(total_loss_list)
+        # if cnt > 200:
+        #     c_grad_array = np.array(c_grad_list[:cnt])
+        #     lambda_n_check_array = np.array(lambda_n_check_list[:cnt])
+        #     print(lambda_n_check_array.shape)
+        #     time_axis = np.linspace(0, c_grad_array.shape[0], num = c_grad_array.shape[0]) * data_dt * mini_batch_size
+        #     plt.figure(figsize=(24, 16))
+        #     plt.plot(time_axis,c_grad_array[:, 0], label = "gradc[0] vs t")
+        #     plt.xlabel("time", fontsize=20)
+        #     plt.xticks(fontsize=20)
+        #     plt.yticks(fontsize=20)
+        #     plt.legend(fontsize=20)
+        #
+        #     plt.figure(figsize=(24, 16))
+        #     plt.plot(time_axis,c_grad_array[:, 1], label = "gradc[1] vs t")
+        #     plt.xlabel("time", fontsize=20)
+        #     plt.xticks(fontsize=20)
+        #     plt.yticks(fontsize=20)
+        #     plt.legend(fontsize=20)
+        #
+        #     plt.figure(figsize=(24, 16))
+        #     plt.plot(time_axis,c_grad_array[:, 2], label = "gradc[2] vs t")
+        #     plt.xlabel("time", fontsize=20)
+        #     plt.xticks(fontsize=20)
+        #     plt.yticks(fontsize=20)
+        #     plt.legend(fontsize=20)
+        #
+        #     plt.figure(figsize=(24, 16))
+        #     plt.plot(time_axis,c_grad_array[:, 3], label = "gradc[3] vs t")
+        #     plt.xlabel("time", fontsize=20)
+        #     plt.xticks(fontsize=20)
+        #     plt.yticks(fontsize=20)
+        #     plt.legend(fontsize=20)
+        #
+        #     plt.figure(figsize=(24, 16))
+        #     plt.plot(time_axis, lambda_n_check_array[:, 0], label= " lambda_n vs t")
+        #     plt.xlabel("time", fontsize=20)
+        #     plt.xticks(fontsize=20)
+        #     plt.yticks(fontsize=20)
+        #     plt.legend(fontsize=20)
+        #
+        #     plt.figure(figsize=(24, 16))
+        #     plt.hist(c_grad_array[:, 0], bins=100, label= " gradc[0] histogram ")
+        #     plt.xticks(fontsize=20)
+        #     plt.yticks(fontsize=20)
+        #     plt.legend(fontsize=20)
+        #
+        #     plt.figure(figsize=(24, 16))
+        #     plt.hist(c_grad_array[:, 1], bins=100, label= " gradc[1] histogram")
+        #     plt.xticks(fontsize=20)
+        #     plt.yticks(fontsize=20)
+        #     plt.legend(fontsize=20)
+        #
+        #     plt.figure(figsize=(24, 16))
+        #     plt.hist(c_grad_array[:, 2], bins=100, label= " gradc[2] histogram")
+        #     plt.xticks(fontsize=20)
+        #     plt.yticks(fontsize=20)
+        #     plt.legend(fontsize=20)
+        #
+        #     plt.figure(figsize=(24, 16))
+        #     plt.hist(c_grad_array[:, 3], bins=100, label= " gradc[3] histogram")
+        #     plt.xticks(fontsize=20)
+        #     plt.yticks(fontsize=20)
+        #     plt.legend(fontsize=20)
+        #     plt.show()
             break
 
 

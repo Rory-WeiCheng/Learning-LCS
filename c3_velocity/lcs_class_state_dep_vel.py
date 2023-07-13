@@ -299,9 +299,9 @@ class LCS_VN:
 
         # define loss function
         total_loss = 1. * dyn_loss \
-                     + 1. / epsilon * lcp_aug_loss \
-                     + w_D * dot(vec(DM(D_ref)) - vec(self.D), vec(DM(D_ref)) - vec(self.D)) \
-                     + w_F * dot(vec(DM(F_ref)) - vec(self.F), vec(DM(F_ref)) - vec(self.F)) \
+                     + (1. / epsilon) * lcp_aug_loss \
+                     # + w_D * dot(vec(DM(D_ref)) - vec(self.D), vec(DM(D_ref)) - vec(self.D)) \
+                     # + w_F * dot(vec(DM(F_ref)) - vec(self.F), vec(DM(F_ref)) - vec(self.F)) \
 
         # # construct the quadratic term for convexity check, self coded
         # D_QP = (self.D + D_M)
@@ -348,8 +348,9 @@ class LCS_VN:
         dyn_loss_plus = dyn_loss + \
                         w_D * dot(vec(DM(D_ref)) - vec(self.D), vec(DM(D_ref)) - vec(self.D)) + \
                         w_F * dot(vec(DM(F_ref)) - vec(self.F), vec(DM(F_ref)) - vec(self.F))
+        Dlambda = (self.D + D_M) @ lam
         self.loss_fn = Function('loss_fn', [data_pair, lam_phi, mu, self.theta, theta_M],
-                                [jacobian(L, self.theta).T*self.theta_mask, dyn_loss_plus, lcp_aug_loss, dyn_error, lcp_error])
+                                [jacobian(L, self.theta).T*self.theta_mask, dyn_loss_plus, lcp_aug_loss, dyn_error, lcp_error, Dlambda])
         # pdb.set_trace()
 
     def step(self, batch_x, batch_u, batch_x_next, current_theta, batch_A, batch_B, batch_D, batch_dynamic_offset,
@@ -386,7 +387,7 @@ class LCS_VN:
 
         # solve the gradient
         # start_gradient_time = time.time()
-        dtheta_batch, dyn_loss_batch, lcp_loss_batch, dyn_error_batch, lcp_error_batch = \
+        dtheta_batch, dyn_loss_batch, lcp_loss_batch, dyn_error_batch, lcp_error_batch, Dlambda = \
             self.loss_fn(data_batch.T, lam_phi_batch, mu_batch, current_theta, theta_M_batch.T)
 
         # calculate the average of the batch gradient for the update of gradient descent
@@ -395,10 +396,12 @@ class LCS_VN:
         mean_dtheta = dtheta_batch.full()
 
         # gradient magnitude filtering, need to analyze the distribution of gradient
-        mean_dtheta = np.where(abs(mean_dtheta)>1e-5, mean_dtheta, 0)
+        mean_dtheta = np.where(abs(mean_dtheta)>1e-10, mean_dtheta, 0)
         mean_dtheta = mean_dtheta.mean(axis=1)
 
         mean_dyn_loss = dyn_loss_batch.full().mean()
         mean_lcp_loss = lcp_loss_batch.full().mean()
 
-        return mean_loss, mean_dtheta, mean_dyn_loss, mean_lcp_loss, lam_batch.T, dyn_error_batch.T, lcp_error_batch.T
+        Dlambda_mean = Dlambda.full().mean(axis=1)
+
+        return mean_loss, mean_dtheta, mean_dyn_loss, mean_lcp_loss, lam_batch.T, dyn_error_batch.T, lcp_error_batch.T, Dlambda_mean

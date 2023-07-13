@@ -10,11 +10,11 @@ except ImportError:
 import struct
 
 class lcmt_visual(object):
-    __slots__ = ["num_velocity", "num_lambda", "d_grad", "c_grad", "dyn_error_check", "lcp_error_check", "lambda_check", "res_check", "lambda_n"]
+    __slots__ = ["num_velocity", "num_lambda", "d_grad", "c_grad", "dyn_error_check", "lcp_error_check", "lambda_check", "res_check", "lambda_n", "Dlambda_check", "total_loss", "dyn_loss", "lcp_loss"]
 
-    __typenames__ = ["int16_t", "int16_t", "double", "double", "double", "double", "double", "double", "double"]
+    __typenames__ = ["int16_t", "int16_t", "double", "double", "double", "double", "double", "double", "double", "double", "double", "double", "double"]
 
-    __dimensions__ = [None, None, ["num_velocity"], ["num_lambda"], ["num_velocity"], ["num_lambda"], ["num_lambda"], ["num_velocity"], [2]]
+    __dimensions__ = [None, None, ["num_velocity"], ["num_lambda"], ["num_velocity"], ["num_lambda"], ["num_lambda"], ["num_velocity"], [2], ["num_velocity"], None, None, None]
 
     def __init__(self):
         self.num_velocity = 0
@@ -26,6 +26,10 @@ class lcmt_visual(object):
         self.lambda_check = []
         self.res_check = []
         self.lambda_n = [ 0.0 for dim0 in range(2) ]
+        self.Dlambda_check = []
+        self.total_loss = 0.0
+        self.dyn_loss = 0.0
+        self.lcp_loss = 0.0
 
     def encode(self):
         buf = BytesIO()
@@ -42,6 +46,8 @@ class lcmt_visual(object):
         buf.write(struct.pack('>%dd' % self.num_lambda, *self.lambda_check[:self.num_lambda]))
         buf.write(struct.pack('>%dd' % self.num_velocity, *self.res_check[:self.num_velocity]))
         buf.write(struct.pack('>2d', *self.lambda_n[:2]))
+        buf.write(struct.pack('>%dd' % self.num_velocity, *self.Dlambda_check[:self.num_velocity]))
+        buf.write(struct.pack(">ddd", self.total_loss, self.dyn_loss, self.lcp_loss))
 
     def decode(data):
         if hasattr(data, 'read'):
@@ -63,12 +69,14 @@ class lcmt_visual(object):
         self.lambda_check = struct.unpack('>%dd' % self.num_lambda, buf.read(self.num_lambda * 8))
         self.res_check = struct.unpack('>%dd' % self.num_velocity, buf.read(self.num_velocity * 8))
         self.lambda_n = struct.unpack('>2d', buf.read(16))
+        self.Dlambda_check = struct.unpack('>%dd' % self.num_velocity, buf.read(self.num_velocity * 8))
+        self.total_loss, self.dyn_loss, self.lcp_loss = struct.unpack(">ddd", buf.read(24))
         return self
     _decode_one = staticmethod(_decode_one)
 
     def _get_hash_recursive(parents):
         if lcmt_visual in parents: return 0
-        tmphash = (0x32f97b743816eed0) & 0xffffffffffffffff
+        tmphash = (0xbe1b1e2ec823b05a) & 0xffffffffffffffff
         tmphash  = (((tmphash<<1)&0xffffffffffffffff) + (tmphash>>63)) & 0xffffffffffffffff
         return tmphash
     _get_hash_recursive = staticmethod(_get_hash_recursive)
