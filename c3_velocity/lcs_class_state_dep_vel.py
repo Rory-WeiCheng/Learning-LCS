@@ -349,8 +349,10 @@ class LCS_VN:
                         w_D * dot(vec(DM(D_ref)) - vec(self.D), vec(DM(D_ref)) - vec(self.D)) + \
                         w_F * dot(vec(DM(F_ref)) - vec(self.F), vec(DM(F_ref)) - vec(self.F))
         Dlambda = (self.D + D_M) @ lam
+        # Dlambda = (self.E + E_M) @ x + (self.H + H_M) @ u + (self.lcp_offset + lcp_offset_M) + (self.F + F_M) @ lam
+        # Dlambda = (self.E + E_M) @ x + (self.H + H_M) @ u + (self.lcp_offset + lcp_offset_M)
         self.loss_fn = Function('loss_fn', [data_pair, lam_phi, mu, self.theta, theta_M],
-                                [jacobian(L, self.theta).T*self.theta_mask, dyn_loss_plus, lcp_aug_loss, dyn_error, lcp_error, Dlambda])
+                                [jacobian(L, self.theta).T*self.theta_mask, dyn_loss_plus, lcp_aug_loss / epsilon, dyn_error, lcp_error, Dlambda])
         # pdb.set_trace()
 
     def step(self, batch_x, batch_u, batch_x_next, current_theta, batch_A, batch_B, batch_D, batch_dynamic_offset,

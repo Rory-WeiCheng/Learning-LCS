@@ -32,6 +32,7 @@ E_res = np.zeros((num_lambda, num_state))
 F_res = np.zeros((num_lambda, num_lambda))
 H_res = np.zeros((num_lambda, num_control))
 c_res = np.zeros(num_lambda)
+# c_res = 0.04 * np.ones(num_lambda)
 
 # initialization of the checking and visualization data
 c_grad = np.zeros(num_lambda)
@@ -135,28 +136,29 @@ D_mask = np.zeros((num_velocity, num_lambda))
 d_mask = np.zeros(num_velocity)
 # d_mask = np.ones(num_velocity)
 
-E_mask = np.ones((num_lambda, num_state))
-H_mask = np.ones((num_lambda, num_control))
+E_mask = np.zeros((num_lambda, num_state))
+H_mask = np.zeros((num_lambda, num_control))
 c_mask = np.ones(num_lambda)
 
 # need to carefully think about this one
-G_mask = np.ones(int((num_lambda + 1) * num_lambda / 2))
-S_mask = np.ones((num_lambda,num_lambda))
+G_mask = np.zeros(int((num_lambda + 1) * num_lambda / 2))
+S_mask = np.zeros((num_lambda,num_lambda))
 
 # establish the violation-based learner, the main parameters are shown below
 # F_Stiffness enforce the F matrix to be PD (orginally can only guarantee PSD), need to tune
-F_stiffness = 1e-2
+F_stiffness = 1e-1
 # gamma should set to be gamma < F_Stiffness
-gamma = 1e-3
+gamma = 1e-2
 # epsilon represent the weight put on LCP violation part (weight is 1/epsilon)
-epsilon = 1
+epsilon = 1e-6
+
 
 # also assign weight for each residual, now we only learn from ball velocity residuals
 Q_ee = 0 * np.eye(3)
 # Q_ee = np.diag(np.array([1, 1, 1]))
 Q_br = 0 * np.eye(3)
 # Q_br = np.diag(np.array([1, 1, 1]))
-Q_bp = np.diag(np.array([1, 1, 1]))
+Q_bp = 1e7 * np.diag(np.array([1, 1, 1]))
 Q = scipy.linalg.block_diag(Q_ee, Q_br, Q_bp)
 
 # initialize the learning, warning would rise if dimension does not match
@@ -167,7 +169,7 @@ vn_learner = lcs_class_state_dep_vel.LCS_VN(n_state=num_state, n_control=num_con
 vn_learner.diff(gamma=gamma, epsilon=epsilon, w_D=1e-6, D_ref=0, w_F=0e-6, F_ref=0)
 
 # establish the optimizer, currently choose the Adam gradient descent method
-vn_learning_rate = 1e-3
+vn_learning_rate = 5e-3
 vn_optimizier = opt.Adam()
 vn_optimizier.learning_rate = vn_learning_rate
 
@@ -180,7 +182,7 @@ index_span = int(reference_model_dt / data_dt)
 # mini_batch is done by batch computing in casadi, the batch corresponds to the time period of data_dt * mini_batch_size
 mini_batch_size = 10
 # max_iter is the time to do gradient steps for this batch data
-max_iter = 10
+max_iter = 1
 
 # gradient buffer setting, the gradient update would use the average of the gradient buffer to update to ensure that the
 # contact prediction information is inlcluded
@@ -317,6 +319,8 @@ def learning():
                 lambda_n_check[0] = np.sum(lambda_check[0:4])
                 lambda_n_check[1] = np.sum(lambda_check[4:])
                 Dlambda_check = Dlambda_mean
+                # Dlambda_check[0:8] = Dlambda_mean
+                # Dlambda_check[8] = 0
 
 
             # store loss
@@ -325,7 +329,7 @@ def learning():
             # dyn_loss_list.append(vn_dyn_loss)
             # lcp_loss_list.append(vn_lcp_loss)
             total_loss_check = vn_mean_loss
-            # dyn_loss_check = vn_dyn_loss
+            dyn_loss_check = vn_dyn_loss
             lcp_loss_check = vn_lcp_loss
 
             # print('iter:', iter, 'vn_loss: ', vn_mean_loss, 'vn_dyn_loss: ', vn_dyn_loss, 'vn_lcp_loss', vn_lcp_loss)
