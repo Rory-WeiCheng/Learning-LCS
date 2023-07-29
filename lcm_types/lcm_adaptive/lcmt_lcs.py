@@ -10,13 +10,14 @@ except ImportError:
 import struct
 
 class lcmt_lcs(object):
-    __slots__ = ["num_state", "num_velocity", "num_control", "num_lambda", "A", "B", "D", "d", "E", "F", "H", "c"]
+    __slots__ = ["utime", "num_state", "num_velocity", "num_control", "num_lambda", "A", "B", "D", "d", "E", "F", "H", "c"]
 
-    __typenames__ = ["int16_t", "int16_t", "int16_t", "int16_t", "double", "double", "double", "double", "double", "double", "double", "double"]
+    __typenames__ = ["int64_t", "int16_t", "int16_t", "int16_t", "int16_t", "double", "double", "double", "double", "double", "double", "double", "double"]
 
-    __dimensions__ = [None, None, None, None, ["num_velocity", "num_state"], ["num_velocity", "num_control"], ["num_velocity", "num_lambda"], ["num_velocity"], ["num_lambda", "num_state"], ["num_lambda", "num_lambda"], ["num_lambda", "num_control"], ["num_lambda"]]
+    __dimensions__ = [None, None, None, None, None, ["num_velocity", "num_state"], ["num_velocity", "num_control"], ["num_velocity", "num_lambda"], ["num_velocity"], ["num_lambda", "num_state"], ["num_lambda", "num_lambda"], ["num_lambda", "num_control"], ["num_lambda"]]
 
     def __init__(self):
+        self.utime = 0
         self.num_state = 0
         self.num_velocity = 0
         self.num_control = 0
@@ -37,7 +38,7 @@ class lcmt_lcs(object):
         return buf.getvalue()
 
     def _encode_one(self, buf):
-        buf.write(struct.pack(">hhhh", self.num_state, self.num_velocity, self.num_control, self.num_lambda))
+        buf.write(struct.pack(">qhhhh", self.utime, self.num_state, self.num_velocity, self.num_control, self.num_lambda))
         for i0 in range(self.num_velocity):
             buf.write(struct.pack('>%dd' % self.num_state, *self.A[i0][:self.num_state]))
         for i0 in range(self.num_velocity):
@@ -65,7 +66,7 @@ class lcmt_lcs(object):
 
     def _decode_one(buf):
         self = lcmt_lcs()
-        self.num_state, self.num_velocity, self.num_control, self.num_lambda = struct.unpack(">hhhh", buf.read(8))
+        self.utime, self.num_state, self.num_velocity, self.num_control, self.num_lambda = struct.unpack(">qhhhh", buf.read(16))
         self.A = []
         for i0 in range(self.num_velocity):
             self.A.append(struct.unpack('>%dd' % self.num_state, buf.read(self.num_state * 8)))
@@ -91,7 +92,7 @@ class lcmt_lcs(object):
 
     def _get_hash_recursive(parents):
         if lcmt_lcs in parents: return 0
-        tmphash = (0x93a0b42fe1a35e5c) & 0xffffffffffffffff
+        tmphash = (0x5bc125433ecf42f4) & 0xffffffffffffffff
         tmphash  = (((tmphash<<1)&0xffffffffffffffff) + (tmphash>>63)) & 0xffffffffffffffff
         return tmphash
     _get_hash_recursive = staticmethod(_get_hash_recursive)

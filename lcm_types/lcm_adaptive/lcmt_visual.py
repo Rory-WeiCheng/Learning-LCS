@@ -10,13 +10,14 @@ except ImportError:
 import struct
 
 class lcmt_visual(object):
-    __slots__ = ["num_velocity", "num_lambda", "d_grad", "c_grad", "dyn_error_check", "lcp_error_check", "lambda_check", "res_check", "lambda_n", "Dlambda_check", "total_loss", "dyn_loss", "lcp_loss", "period_loss", "period_dyn_loss", "period_lcp_loss"]
+    __slots__ = ["utime", "num_velocity", "num_lambda", "d_grad", "c_grad", "dyn_error_check", "lcp_error_check", "lambda_check", "res_check", "lambda_n", "Dlambda_check", "total_loss", "dyn_loss", "lcp_loss", "period_loss", "period_dyn_loss", "period_lcp_loss"]
 
-    __typenames__ = ["int16_t", "int16_t", "double", "double", "double", "double", "double", "double", "double", "double", "double", "double", "double", "double", "double", "double"]
+    __typenames__ = ["int64_t", "int16_t", "int16_t", "double", "double", "double", "double", "double", "double", "double", "double", "double", "double", "double", "double", "double", "double"]
 
-    __dimensions__ = [None, None, ["num_velocity"], ["num_lambda"], ["num_velocity"], ["num_lambda"], ["num_lambda"], ["num_velocity"], [2], ["num_velocity"], None, None, None, None, None, None]
+    __dimensions__ = [None, None, None, ["num_velocity"], ["num_lambda"], ["num_velocity"], ["num_lambda"], ["num_lambda"], ["num_velocity"], [2], ["num_velocity"], None, None, None, None, None, None]
 
     def __init__(self):
+        self.utime = 0
         self.num_velocity = 0
         self.num_lambda = 0
         self.d_grad = []
@@ -41,7 +42,7 @@ class lcmt_visual(object):
         return buf.getvalue()
 
     def _encode_one(self, buf):
-        buf.write(struct.pack(">hh", self.num_velocity, self.num_lambda))
+        buf.write(struct.pack(">qhh", self.utime, self.num_velocity, self.num_lambda))
         buf.write(struct.pack('>%dd' % self.num_velocity, *self.d_grad[:self.num_velocity]))
         buf.write(struct.pack('>%dd' % self.num_lambda, *self.c_grad[:self.num_lambda]))
         buf.write(struct.pack('>%dd' % self.num_velocity, *self.dyn_error_check[:self.num_velocity]))
@@ -64,7 +65,7 @@ class lcmt_visual(object):
 
     def _decode_one(buf):
         self = lcmt_visual()
-        self.num_velocity, self.num_lambda = struct.unpack(">hh", buf.read(4))
+        self.utime, self.num_velocity, self.num_lambda = struct.unpack(">qhh", buf.read(12))
         self.d_grad = struct.unpack('>%dd' % self.num_velocity, buf.read(self.num_velocity * 8))
         self.c_grad = struct.unpack('>%dd' % self.num_lambda, buf.read(self.num_lambda * 8))
         self.dyn_error_check = struct.unpack('>%dd' % self.num_velocity, buf.read(self.num_velocity * 8))
@@ -79,7 +80,7 @@ class lcmt_visual(object):
 
     def _get_hash_recursive(parents):
         if lcmt_visual in parents: return 0
-        tmphash = (0x439484de4ef0f627) & 0xffffffffffffffff
+        tmphash = (0xba09e5c0b140cf1b) & 0xffffffffffffffff
         tmphash  = (((tmphash<<1)&0xffffffffffffffff) + (tmphash>>63)) & 0xffffffffffffffff
         return tmphash
     _get_hash_recursive = staticmethod(_get_hash_recursive)

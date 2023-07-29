@@ -3,6 +3,7 @@ package lcm_adaptive;
 
 struct lcmt_visual
 {
+  int64_t utime;
   int16_t num_velocity;
   int16_t num_lambda;
 
