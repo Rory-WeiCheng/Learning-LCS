@@ -21,6 +21,7 @@ num_state = 19
 num_velocity = 9
 num_control = 3
 num_lambda = 8
+utime = 0
 
 # initialization of the residual lcs, all to be zeros and can be first published
 A_res = np.zeros((num_velocity, num_state))
@@ -48,6 +49,9 @@ Dlambda_check = np.zeros(num_velocity)
 total_loss_check = np.zeros(1)
 dyn_loss_check = np.zeros(1)
 lcp_loss_check = np.zeros(1)
+period_loss_check = np.zeros(1)
+period_dyn_loss_check = np.zeros(1)
+period_lcp_loss_check = np.zeros(1)
 
 ############################################## LCM and data buffer setting #############################################
 # define a data buffer class that keeps taking in the data and is growing
@@ -79,7 +83,8 @@ class LCM_data_buffer:
         msg = lcmt_learning_data.decode(data)
 
         # if not reaching settling time (have nor started), then don't grab data
-        if msg.utime * 1e-6 < msg.settling_time:
+        safety_dt = 0.05
+        if msg.utime * 1e-6 < msg.settling_time + safety_dt:
             return
         else:
             # grab data and store in the predefined list
@@ -111,6 +116,7 @@ lc_visual_publish = lcm.LCM()
 
 ############################################## Learner setting #########################################################
 cnt = 0
+period_cnt = 0
 
 # warm start options
 A_init = np.zeros(num_velocity * num_state)
@@ -166,11 +172,11 @@ vn_learner = lcs_class_state_dep_vel.LCS_VN(n_state=num_state, n_control=num_con
                                             F_stiffness=F_stiffness, Q=Q, A_mask=A_mask, B_mask=B_mask, D_mask=D_mask,
                                             dyn_offset_mask=d_mask, E_mask=E_mask, H_mask=H_mask, G_mask=G_mask, S_mask=S_mask,
                                             lcp_offset_mask=c_mask)
-vn_learner.diff(gamma=gamma, epsilon=epsilon, w_D=1e-6, D_ref=0, w_F=0e-6, F_ref=0)
+vn_learner.diff(gamma=gamma, epsilon=epsilon, w_D=0e-6, D_ref=0, w_F=0e-6, F_ref=0)
 
 # establish the optimizer, currently choose the Adam gradient descent method
-vn_learning_rate = 5e-3
-vn_optimizier = opt.Adam()
+vn_learning_rate = 5e-7
+vn_optimizier = opt.Vanilla_GD()
 vn_optimizier.learning_rate = vn_learning_rate
 
 # currently, collect data at a fixed frequency, so the timestamp alignment can be done through index search
@@ -219,8 +225,8 @@ def data_grabbing():
         lcm_data.lc.handle()
 
 def learning():
-    global cnt
-    global num_state, num_velocity, num_control, num_lambda
+    global cnt, period_cnt
+    global num_state, num_velocity, num_control, num_lambda, utime
     global A_res, B_res, D_res, d_res, E_res, F_res, H_res, c_res
     global max_iter, mini_batch_size, Q
     global vn_learner, vn_optimizier, vn_curr_theta
@@ -228,54 +234,13 @@ def learning():
     global total_loss_list, dyn_loss_list, lcp_loss_list, theta_learnt_list
     global grad_buffer, buffer_size
     global c_grad, d_grad, dyn_error_check, lcp_error_check, lambda_check, res_check, lambda_n_check, Dlambda_check
-    global total_loss_check, dyn_loss_check, lcp_loss_check
+    global total_loss_check, dyn_loss_check, lcp_loss_check, period_loss_check, period_dyn_loss_check, period_lcp_loss_check
 
     while True:
-        # keep publishing the data
-        msg = lcmt_lcs()
-        msg_visual = lcmt_visual()
-
-        # for learned matrices publishing
-        msg.num_state = num_state
-        msg.num_velocity = num_velocity
-        msg.num_control = num_control
-        msg.num_lambda = num_lambda
-
-        msg.A = A_res
-        msg.B = B_res
-        msg.D = D_res
-        msg.d = d_res
-
-        msg.E = E_res
-        msg.F = F_res
-        msg.H = H_res
-        msg.c = c_res
-
-        # for visualization and sanity check
-        msg_visual.num_velocity = num_velocity
-        msg_visual.num_lambda = num_lambda
-
-        msg_visual.d_grad = d_grad
-        msg_visual.c_grad = c_grad
-
-        msg_visual.dyn_error_check = dyn_error_check
-        msg_visual.lcp_error_check = lcp_error_check
-        msg_visual.lambda_check = lambda_check
-        msg_visual.res_check = res_check
-        msg_visual.lambda_n = lambda_n_check
-        msg_visual.Dlambda_check = Dlambda_check
-
-        msg_visual.total_loss = total_loss_check
-        msg_visual.dyn_loss = dyn_loss_check
-        msg_visual.lcp_loss = lcp_loss_check
-
-        # publish the message
-        lc_publish.publish("RESIDUAL_LCS", msg.encode())
-        lc_visual_publish.publish("DATA_CHECKING", msg_visual.encode())
-
         if len(lcm_data.state_list) < (cnt+1)*mini_batch_size + index_span:
             # when data enough, start learning, or just send current result
-            continue
+            # if learning not start, send zero matrices and regard the time as 0
+            pass
         else:
             start_time = time.time()
             # get batch data (horizon data_dt * mini_batch_size) and data in the future (reference_model_dt)
@@ -325,9 +290,9 @@ def learning():
 
             # store loss
             # theta_learnt_list.append(vn_curr_theta)
-            # total_loss_list.append(vn_mean_loss)
-            # dyn_loss_list.append(vn_dyn_loss)
-            # lcp_loss_list.append(vn_lcp_loss)
+            total_loss_list.append(vn_mean_loss.copy())
+            dyn_loss_list.append(vn_dyn_loss.copy())
+            lcp_loss_list.append(vn_lcp_loss.copy())
             total_loss_check = vn_mean_loss
             dyn_loss_check = vn_dyn_loss
             lcp_loss_check = vn_lcp_loss
@@ -335,26 +300,87 @@ def learning():
             # print('iter:', iter, 'vn_loss: ', vn_mean_loss, 'vn_dyn_loss: ', vn_dyn_loss, 'vn_lcp_loss', vn_lcp_loss)
 
             # convert the learnt parameters into matrices, comment this if do not want learning
-            Start_LCSdata_time = time.time()
-            A_res = vn_learner.A_fn(vn_curr_theta).full()
-            B_res = vn_learner.B_fn(vn_curr_theta).full()
-            D_res = vn_learner.D_fn(vn_curr_theta).full()
-            d_res = vn_learner.dyn_offset_fn(vn_curr_theta).full()
-            E_res = vn_learner.E_fn(vn_curr_theta).full()
-            F_res = vn_learner.F_fn(vn_curr_theta).full()
-            H_res = vn_learner.H_fn(vn_curr_theta).full()
-            c_res = vn_learner.lcp_offset_fn(vn_curr_theta).full()
+            # Start_LCSdata_time = time.time()
+            # A_res = vn_learner.A_fn(vn_curr_theta).full()
+            # B_res = vn_learner.B_fn(vn_curr_theta).full()
+            # D_res = vn_learner.D_fn(vn_curr_theta).full()
+            # d_res = vn_learner.dyn_offset_fn(vn_curr_theta).full()
+            # E_res = vn_learner.E_fn(vn_curr_theta).full()
+            # F_res = vn_learner.F_fn(vn_curr_theta).full()
+            # H_res = vn_learner.H_fn(vn_curr_theta).full()
+            # c_res = vn_learner.lcp_offset_fn(vn_curr_theta).full()
+
+            # assign the time for this calculation to be the time of the initial point of the batch data
+            utime = int(lcm_data.timestamp_list[cnt*mini_batch_size] * 1e6)
 
             end_time = time.time()
             # counter add on to move to next data batch
             cnt = cnt + 1
 
-            # check the time for each loop
-            # print(cnt)
-            # print("Learning Time：", end_time - start_time)
-            # print("Data Time：", end_data_time - start_time + end_time - Start_LCSdata_time)
-            # print(cnt*mini_batch_size)
-            # print((cnt+1)*mini_batch_size)
+            period_cnt = period_cnt + 1
+            if period_cnt == 46:
+                period_cnt = 0
+                period_loss_check = sum(total_loss_list) / len(total_loss_list)
+                total_loss_list = []
+                period_dyn_loss_check = sum(dyn_loss_list) / len(dyn_loss_list)
+                dyn_loss_list = []
+                period_lcp_loss_check = sum(lcp_loss_list) / len(lcp_loss_list)
+                lcp_loss_list = []
+
+        # keep publishing the data
+        msg = lcmt_lcs()
+        msg_visual = lcmt_visual()
+
+        # for learned matrices publishing
+        msg.num_state = num_state
+        msg.num_velocity = num_velocity
+        msg.num_control = num_control
+        msg.num_lambda = num_lambda
+        msg.utime = utime
+
+        msg.A = A_res
+        msg.B = B_res
+        msg.D = D_res
+        msg.d = d_res
+
+        msg.E = E_res
+        msg.F = F_res
+        msg.H = H_res
+        msg.c = c_res
+
+        # for visualization and sanity check
+        msg_visual.num_velocity = num_velocity
+        msg_visual.num_lambda = num_lambda
+        msg_visual.utime = utime
+
+        msg_visual.d_grad = d_grad
+        msg_visual.c_grad = c_grad
+
+        msg_visual.dyn_error_check = dyn_error_check
+        msg_visual.lcp_error_check = lcp_error_check
+        msg_visual.lambda_check = lambda_check
+        msg_visual.res_check = res_check
+        msg_visual.lambda_n = lambda_n_check
+        msg_visual.Dlambda_check = Dlambda_check
+
+        msg_visual.total_loss = total_loss_check
+        msg_visual.dyn_loss = dyn_loss_check
+        msg_visual.lcp_loss = lcp_loss_check
+        msg_visual.period_loss = period_loss_check
+        msg_visual.period_dyn_loss = period_dyn_loss_check
+        msg_visual.period_lcp_loss = period_lcp_loss_check
+
+        # publish the message
+        lc_publish.publish("RESIDUAL_LCS", msg.encode())
+        lc_visual_publish.publish("DATA_CHECKING", msg_visual.encode())
+
+
+        # check the time for each loop
+        # print(cnt)
+        # print("Learning Time：", end_time - start_time)
+        # print("Data Time：", end_data_time - start_time + end_time - Start_LCSdata_time)
+        # print(cnt*mini_batch_size)
+        # print((cnt+1)*mini_batch_size)
 
 def visualization():
     global cnt, buffer_size

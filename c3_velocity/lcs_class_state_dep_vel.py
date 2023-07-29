@@ -300,6 +300,7 @@ class LCS_VN:
         # define loss function
         total_loss = 1. * dyn_loss \
                      + (1. / epsilon) * lcp_aug_loss \
+                     # + 1 * dot(self.lcp_offset, self.lcp_offset)
                      # + w_D * dot(vec(DM(D_ref)) - vec(self.D), vec(DM(D_ref)) - vec(self.D)) \
                      # + w_F * dot(vec(DM(F_ref)) - vec(self.F), vec(DM(F_ref)) - vec(self.F)) \
 
@@ -398,7 +399,7 @@ class LCS_VN:
         mean_dtheta = dtheta_batch.full()
 
         # gradient magnitude filtering, need to analyze the distribution of gradient
-        mean_dtheta = np.where(abs(mean_dtheta)>1e-10, mean_dtheta, 0)
+        mean_dtheta = np.where(abs(mean_dtheta)>1e-7, mean_dtheta, 0)
         mean_dtheta = mean_dtheta.mean(axis=1)
 
         mean_dyn_loss = dyn_loss_batch.full().mean()
