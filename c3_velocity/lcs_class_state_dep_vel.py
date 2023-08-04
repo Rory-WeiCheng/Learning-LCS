@@ -291,7 +291,6 @@ class LCS_VN:
             dyn_loss = 0.5 * dot(dyn - x_next, dyn - x_next)
         else:
             dyn_loss = 0.5 * (dyn - x_next).T @ self.Q @ (dyn - x_next)
-
         # lcp loss
         dist = (self.E + E_M) @ x + (self.H + H_M) @ u + (self.F + F_M) @ lam + (self.lcp_offset + lcp_offset_M)
         lcp_error = dist - phi

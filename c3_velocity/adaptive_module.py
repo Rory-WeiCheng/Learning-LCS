@@ -139,7 +139,7 @@ vn_curr_theta = np.concatenate([A_init,B_init,D_init,d_init,E_init,H_init,G_init
 A_mask = np.zeros((num_velocity, num_state))
 B_mask = np.zeros((num_velocity, num_control))
 D_mask = np.zeros((num_velocity, num_lambda))
-d_mask = np.zeros(num_velocity)
+d_mask = np.ones(num_velocity)
 # d_mask = np.ones(num_velocity)
 
 E_mask = np.zeros((num_lambda, num_state))
@@ -156,12 +156,12 @@ F_stiffness = 1e-1
 # gamma should set to be gamma < F_Stiffness
 gamma = 1e-2
 # epsilon represent the weight put on LCP violation part (weight is 1/epsilon)
-epsilon = 1e-6
+epsilon = 5e-8
 
 
 # also assign weight for each residual, now we only learn from ball velocity residuals
 Q_ee = 0 * np.eye(3)
-# Q_ee = np.diag(np.array([1, 1, 1]))
+# Q_ee = 1e6 * np.diag(np.array([1, 1, 1]))
 Q_br = 0 * np.eye(3)
 # Q_br = np.diag(np.array([1, 1, 1]))
 Q_bp = 1e7 * np.diag(np.array([1, 1, 1]))
@@ -175,8 +175,8 @@ vn_learner = lcs_class_state_dep_vel.LCS_VN(n_state=num_state, n_control=num_con
 vn_learner.diff(gamma=gamma, epsilon=epsilon, w_D=0e-6, D_ref=0, w_F=0e-6, F_ref=0)
 
 # establish the optimizer, currently choose the Adam gradient descent method
-vn_learning_rate = 5e-7
-vn_optimizier = opt.Vanilla_GD()
+vn_learning_rate = 1e-3
+vn_optimizier = opt.Adam()
 vn_optimizier.learning_rate = vn_learning_rate
 
 # currently, collect data at a fixed frequency, so the timestamp alignment can be done through index search
@@ -191,7 +191,7 @@ mini_batch_size = 10
 max_iter = 1
 
 # gradient buffer setting, the gradient update would use the average of the gradient buffer to update to ensure that the
-# contact prediction information is inlcluded
+# contact prediction information is included
 # time span of the gradient buffer, should be determined by analyzing the gradient distribution
 # buffer_time = 1
 # # buffer size should be determined by buffer_time, max_iter, mini_batch_size, data_dt
@@ -214,13 +214,13 @@ np.set_printoptions(linewidth=450)
 # lambda_n_check_list= []
 
 
+
 ########################################## multiple thread #############################################################
 # use multiple threads parallel to keep grabbing data while not hindering the learning
 # the above defined variables should be declared as global in the following function, check this first when debugging!
 def data_grabbing():
     # data grabbing function
     global lcm_data
-    global cnt
     while True:
         lcm_data.lc.handle()
 
@@ -244,23 +244,41 @@ def learning():
         else:
             start_time = time.time()
             # get batch data (horizon data_dt * mini_batch_size) and data in the future (reference_model_dt)
+            u_list = []
+            x_pred_list = []
             x_batch = np.array(lcm_data.state_list[cnt*mini_batch_size: (cnt+1)*mini_batch_size])
-            u_batch = np.array(lcm_data.input_list[cnt*mini_batch_size: (cnt+1)*mini_batch_size])
-            x_pred_batch = np.array(lcm_data.state_pred_list[cnt*mini_batch_size: (cnt+1)*mini_batch_size])
+
+            # 2023.8.2 use the avergae of the input over the time horizon as the prediction
+            for i in range(x_batch.shape[0]):
+                u = np.array(lcm_data.input_list[cnt*mini_batch_size + i : cnt*mini_batch_size + index_span + i])
+                u_i = np.mean(u, axis=0)
+                A_i = lcm_data.A_list[cnt * mini_batch_size + i]
+                B_i = lcm_data.B_list[cnt * mini_batch_size + i]
+                d_i = lcm_data.d_list[cnt * mini_batch_size + i]
+
+                x_pred_i = A_i @ x_batch[i,:] + B_i @ u_i + d_i
+                u_list.append(u_i)
+                x_pred_list.append(x_pred_i)
+
+            # u_batch = np.array(lcm_data.input_list[cnt*mini_batch_size: (cnt+1)*mini_batch_size])   # original one
+            u_batch = np.array(u_list)
+            # x_pred_batch = np.array(lcm_data.state_pred_list[cnt*mini_batch_size: (cnt+1)*mini_batch_size])  # original one
+            x_pred_batch = np.array(x_pred_list)
+
             x_next_batch = np.array(lcm_data.state_list[cnt*mini_batch_size + index_span: (cnt+1)*mini_batch_size + index_span])
             res_batch = x_next_batch[:,num_state-num_velocity:] - x_pred_batch
-            res_check = np.mean(res_batch, axis = 0)
+            res_check = np.mean(res_batch, axis=0)
 
             A_batch = np.zeros((num_velocity, mini_batch_size * num_state))
             B_batch = np.zeros((num_velocity, mini_batch_size * num_control))
             D_batch = np.array(lcm_data.D_list[cnt*mini_batch_size: (cnt+1)*mini_batch_size]).swapaxes(0, 1).reshape(num_velocity, -1)
             d_batch = np.zeros((num_velocity, mini_batch_size))
 
+
             E_batch = np.array(lcm_data.E_list[cnt*mini_batch_size: (cnt+1)*mini_batch_size]).swapaxes(0, 1).reshape(num_lambda, -1)
             F_batch = np.array(lcm_data.F_list[cnt*mini_batch_size: (cnt+1)*mini_batch_size]).swapaxes(0, 1).reshape(num_lambda, -1)
             H_batch = np.array(lcm_data.H_list[cnt*mini_batch_size: (cnt+1)*mini_batch_size]).swapaxes(0, 1).reshape(num_lambda, -1)
             c_batch = np.array(lcm_data.c_list[cnt*mini_batch_size: (cnt+1)*mini_batch_size]).T
-
             # print(np.array(
             #     lcm_data.timestamp_list[cnt * mini_batch_size + index_span: (cnt + 1) * mini_batch_size + index_span]) \
             #               -np.array(lcm_data.timestamp_list[cnt*mini_batch_size: (cnt+1)*mini_batch_size]))
@@ -300,25 +318,24 @@ def learning():
             # print('iter:', iter, 'vn_loss: ', vn_mean_loss, 'vn_dyn_loss: ', vn_dyn_loss, 'vn_lcp_loss', vn_lcp_loss)
 
             # convert the learnt parameters into matrices, comment this if do not want learning
-            # Start_LCSdata_time = time.time()
-            # A_res = vn_learner.A_fn(vn_curr_theta).full()
-            # B_res = vn_learner.B_fn(vn_curr_theta).full()
-            # D_res = vn_learner.D_fn(vn_curr_theta).full()
-            # d_res = vn_learner.dyn_offset_fn(vn_curr_theta).full()
-            # E_res = vn_learner.E_fn(vn_curr_theta).full()
-            # F_res = vn_learner.F_fn(vn_curr_theta).full()
-            # H_res = vn_learner.H_fn(vn_curr_theta).full()
-            # c_res = vn_learner.lcp_offset_fn(vn_curr_theta).full()
+            Start_LCSdata_time = time.time()
+            A_res = vn_learner.A_fn(vn_curr_theta).full()
+            B_res = vn_learner.B_fn(vn_curr_theta).full()
+            D_res = vn_learner.D_fn(vn_curr_theta).full()
+            d_res = vn_learner.dyn_offset_fn(vn_curr_theta).full()
+            E_res = vn_learner.E_fn(vn_curr_theta).full()
+            F_res = vn_learner.F_fn(vn_curr_theta).full()
+            H_res = vn_learner.H_fn(vn_curr_theta).full()
+            c_res = vn_learner.lcp_offset_fn(vn_curr_theta).full()
 
             # assign the time for this calculation to be the time of the initial point of the batch data
             utime = int(lcm_data.timestamp_list[cnt*mini_batch_size] * 1e6)
 
-            end_time = time.time()
             # counter add on to move to next data batch
             cnt = cnt + 1
 
             period_cnt = period_cnt + 1
-            if period_cnt == 46:
+            if period_cnt == 30:
                 period_cnt = 0
                 period_loss_check = sum(total_loss_list) / len(total_loss_list)
                 total_loss_list = []
@@ -327,52 +344,55 @@ def learning():
                 period_lcp_loss_check = sum(lcp_loss_list) / len(lcp_loss_list)
                 lcp_loss_list = []
 
-        # keep publishing the data
-        msg = lcmt_lcs()
-        msg_visual = lcmt_visual()
+            # keep publishing the data
+            msg = lcmt_lcs()
+            msg_visual = lcmt_visual()
 
-        # for learned matrices publishing
-        msg.num_state = num_state
-        msg.num_velocity = num_velocity
-        msg.num_control = num_control
-        msg.num_lambda = num_lambda
-        msg.utime = utime
+            # for learned matrices publishing
+            msg.num_state = num_state
+            msg.num_velocity = num_velocity
+            msg.num_control = num_control
+            msg.num_lambda = num_lambda
+            msg.utime = utime
 
-        msg.A = A_res
-        msg.B = B_res
-        msg.D = D_res
-        msg.d = d_res
+            msg.A = A_res
+            msg.B = B_res
+            msg.D = D_res
+            msg.d = d_res
 
-        msg.E = E_res
-        msg.F = F_res
-        msg.H = H_res
-        msg.c = c_res
+            msg.E = E_res
+            msg.F = F_res
+            msg.H = H_res
+            msg.c = c_res
 
-        # for visualization and sanity check
-        msg_visual.num_velocity = num_velocity
-        msg_visual.num_lambda = num_lambda
-        msg_visual.utime = utime
+            # for visualization and sanity check
+            msg_visual.num_velocity = num_velocity
+            msg_visual.num_lambda = num_lambda
+            msg_visual.utime = utime
 
-        msg_visual.d_grad = d_grad
-        msg_visual.c_grad = c_grad
+            msg_visual.d_grad = d_grad
+            msg_visual.c_grad = c_grad
 
-        msg_visual.dyn_error_check = dyn_error_check
-        msg_visual.lcp_error_check = lcp_error_check
-        msg_visual.lambda_check = lambda_check
-        msg_visual.res_check = res_check
-        msg_visual.lambda_n = lambda_n_check
-        msg_visual.Dlambda_check = Dlambda_check
+            msg_visual.dyn_error_check = dyn_error_check
+            msg_visual.lcp_error_check = lcp_error_check
+            msg_visual.lambda_check = lambda_check
+            msg_visual.res_check = res_check
+            msg_visual.lambda_n = lambda_n_check
+            msg_visual.Dlambda_check = Dlambda_check
 
-        msg_visual.total_loss = total_loss_check
-        msg_visual.dyn_loss = dyn_loss_check
-        msg_visual.lcp_loss = lcp_loss_check
-        msg_visual.period_loss = period_loss_check
-        msg_visual.period_dyn_loss = period_dyn_loss_check
-        msg_visual.period_lcp_loss = period_lcp_loss_check
+            msg_visual.total_loss = total_loss_check
+            msg_visual.dyn_loss = dyn_loss_check
+            msg_visual.lcp_loss = lcp_loss_check
+            msg_visual.period_loss = period_loss_check
+            msg_visual.period_dyn_loss = period_dyn_loss_check
+            msg_visual.period_lcp_loss = period_lcp_loss_check
 
-        # publish the message
-        lc_publish.publish("RESIDUAL_LCS", msg.encode())
-        lc_visual_publish.publish("DATA_CHECKING", msg_visual.encode())
+            # publish the message
+            lc_publish.publish("RESIDUAL_LCS", msg.encode())
+            lc_visual_publish.publish("DATA_CHECKING", msg_visual.encode())
+
+            # end_time = time.time()
+            # print(end_time - start_time)
 
 
         # check the time for each loop
@@ -387,76 +407,54 @@ def visualization():
     global mini_batch_size
     global lcm_data
     global total_loss_list, dyn_loss_list, lcp_loss_list, theta_learnt_list
-    # global c_grad_list, d_grad_list, dyn_error_check_list, lcp_error_check_list, lambda_check_list, lambda_n_check_lis
 
-    # plotting helper function that plot the curve if necessary, not recomended, might slow down program, use lcmspy
-    # plt.ion()
-    while True:
-        # if cnt > 200:
-        #     c_grad_array = np.array(c_grad_list[:cnt])
-        #     lambda_n_check_array = np.array(lambda_n_check_list[:cnt])
-        #     print(lambda_n_check_array.shape)
-        #     time_axis = np.linspace(0, c_grad_array.shape[0], num = c_grad_array.shape[0]) * data_dt * mini_batch_size
-        #     plt.figure(figsize=(24, 16))
-        #     plt.plot(time_axis,c_grad_array[:, 0], label = "gradc[0] vs t")
-        #     plt.xlabel("time", fontsize=20)
-        #     plt.xticks(fontsize=20)
-        #     plt.yticks(fontsize=20)
-        #     plt.legend(fontsize=20)
-        #
-        #     plt.figure(figsize=(24, 16))
-        #     plt.plot(time_axis,c_grad_array[:, 1], label = "gradc[1] vs t")
-        #     plt.xlabel("time", fontsize=20)
-        #     plt.xticks(fontsize=20)
-        #     plt.yticks(fontsize=20)
-        #     plt.legend(fontsize=20)
-        #
-        #     plt.figure(figsize=(24, 16))
-        #     plt.plot(time_axis,c_grad_array[:, 2], label = "gradc[2] vs t")
-        #     plt.xlabel("time", fontsize=20)
-        #     plt.xticks(fontsize=20)
-        #     plt.yticks(fontsize=20)
-        #     plt.legend(fontsize=20)
-        #
-        #     plt.figure(figsize=(24, 16))
-        #     plt.plot(time_axis,c_grad_array[:, 3], label = "gradc[3] vs t")
-        #     plt.xlabel("time", fontsize=20)
-        #     plt.xticks(fontsize=20)
-        #     plt.yticks(fontsize=20)
-        #     plt.legend(fontsize=20)
-        #
-        #     plt.figure(figsize=(24, 16))
-        #     plt.plot(time_axis, lambda_n_check_array[:, 0], label= " lambda_n vs t")
-        #     plt.xlabel("time", fontsize=20)
-        #     plt.xticks(fontsize=20)
-        #     plt.yticks(fontsize=20)
-        #     plt.legend(fontsize=20)
-        #
-        #     plt.figure(figsize=(24, 16))
-        #     plt.hist(c_grad_array[:, 0], bins=100, label= " gradc[0] histogram ")
-        #     plt.xticks(fontsize=20)
-        #     plt.yticks(fontsize=20)
-        #     plt.legend(fontsize=20)
-        #
-        #     plt.figure(figsize=(24, 16))
-        #     plt.hist(c_grad_array[:, 1], bins=100, label= " gradc[1] histogram")
-        #     plt.xticks(fontsize=20)
-        #     plt.yticks(fontsize=20)
-        #     plt.legend(fontsize=20)
-        #
-        #     plt.figure(figsize=(24, 16))
-        #     plt.hist(c_grad_array[:, 2], bins=100, label= " gradc[2] histogram")
-        #     plt.xticks(fontsize=20)
-        #     plt.yticks(fontsize=20)
-        #     plt.legend(fontsize=20)
-        #
-        #     plt.figure(figsize=(24, 16))
-        #     plt.hist(c_grad_array[:, 3], bins=100, label= " gradc[3] histogram")
-        #     plt.xticks(fontsize=20)
-        #     plt.yticks(fontsize=20)
-        #     plt.legend(fontsize=20)
-        #     plt.show()
-            break
+
+# send the initial message
+msg = lcmt_lcs()
+msg_visual = lcmt_visual()
+
+# for learned matrices publishing
+msg.num_state = num_state
+msg.num_velocity = num_velocity
+msg.num_control = num_control
+msg.num_lambda = num_lambda
+msg.utime = utime
+
+msg.A = A_res
+msg.B = B_res
+msg.D = D_res
+msg.d = d_res
+msg.E = E_res
+msg.F = F_res
+msg.H = H_res
+msg.c = c_res
+
+# for visualization and sanity check
+msg_visual.num_velocity = num_velocity
+msg_visual.num_lambda = num_lambda
+msg_visual.utime = utime
+
+msg_visual.d_grad = d_grad
+msg_visual.c_grad = c_grad
+
+msg_visual.dyn_error_check = dyn_error_check
+msg_visual.lcp_error_check = lcp_error_check
+msg_visual.lambda_check = lambda_check
+msg_visual.res_check = res_check
+msg_visual.lambda_n = lambda_n_check
+msg_visual.Dlambda_check = Dlambda_check
+
+msg_visual.total_loss = total_loss_check
+msg_visual.dyn_loss = dyn_loss_check
+msg_visual.lcp_loss = lcp_loss_check
+msg_visual.period_loss = period_loss_check
+msg_visual.period_dyn_loss = period_dyn_loss_check
+msg_visual.period_lcp_loss = period_lcp_loss_check
+
+# publish the message
+lc_publish.publish("RESIDUAL_LCS", msg.encode())
+lc_visual_publish.publish("DATA_CHECKING", msg_visual.encode())
+
 
 
 # main part, excute multiple threads to run the learning and data grabbing (somtimes + plotting) at the same time
