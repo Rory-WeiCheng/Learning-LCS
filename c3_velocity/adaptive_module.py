@@ -139,7 +139,7 @@ vn_curr_theta = np.concatenate([A_init,B_init,D_init,d_init,E_init,H_init,G_init
 A_mask = np.zeros((num_velocity, num_state))
 B_mask = np.zeros((num_velocity, num_control))
 D_mask = np.zeros((num_velocity, num_lambda))
-d_mask = np.ones(num_velocity)
+d_mask = np.zeros(num_velocity)
 # d_mask = np.ones(num_velocity)
 
 E_mask = np.zeros((num_lambda, num_state))
@@ -156,15 +156,15 @@ F_stiffness = 1e-1
 # gamma should set to be gamma < F_Stiffness
 gamma = 1e-2
 # epsilon represent the weight put on LCP violation part (weight is 1/epsilon)
-epsilon = 5e-8
+epsilon = 5e-4
 
 
 # also assign weight for each residual, now we only learn from ball velocity residuals
 Q_ee = 0 * np.eye(3)
-# Q_ee = 1e6 * np.diag(np.array([1, 1, 1]))
+# Q_ee = 1e-5 * np.diag(np.array([1, 1, 1]))
 Q_br = 0 * np.eye(3)
 # Q_br = np.diag(np.array([1, 1, 1]))
-Q_bp = 1e7 * np.diag(np.array([1, 1, 1]))
+Q_bp = 1e5 * np.diag(np.array([1, 1, 1]))
 Q = scipy.linalg.block_diag(Q_ee, Q_br, Q_bp)
 
 # initialize the learning, warning would rise if dimension does not match
@@ -175,7 +175,7 @@ vn_learner = lcs_class_state_dep_vel.LCS_VN(n_state=num_state, n_control=num_con
 vn_learner.diff(gamma=gamma, epsilon=epsilon, w_D=0e-6, D_ref=0, w_F=0e-6, F_ref=0)
 
 # establish the optimizer, currently choose the Adam gradient descent method
-vn_learning_rate = 1e-3
+vn_learning_rate = 1e-2
 vn_optimizier = opt.Adam()
 vn_optimizier.learning_rate = vn_learning_rate
 
@@ -264,6 +264,8 @@ def learning():
             u_batch = np.array(u_list)
             # x_pred_batch = np.array(lcm_data.state_pred_list[cnt*mini_batch_size: (cnt+1)*mini_batch_size])  # original one
             x_pred_batch = np.array(x_pred_list)
+
+            # Dlambda_check = np.mean(x_pred_batch, axis=0)
 
             x_next_batch = np.array(lcm_data.state_list[cnt*mini_batch_size + index_span: (cnt+1)*mini_batch_size + index_span])
             res_batch = x_next_batch[:,num_state-num_velocity:] - x_pred_batch
