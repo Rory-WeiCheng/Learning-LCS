@@ -190,6 +190,10 @@ mini_batch_size = 10
 # max_iter is the time to do gradient steps for this batch data
 max_iter = 1
 
+# period setting
+period_time = 1.5 # in the future, try directly read from yaml file (need to be careful about path)
+period_threshold = period_time / (data_dt * mini_batch_size)
+
 # gradient buffer setting, the gradient update would use the average of the gradient buffer to update to ensure that the
 # contact prediction information is included
 # time span of the gradient buffer, should be determined by analyzing the gradient distribution
@@ -225,7 +229,7 @@ def data_grabbing():
         lcm_data.lc.handle()
 
 def learning():
-    global cnt, period_cnt
+    global cnt, period_cnt, period_threshold
     global num_state, num_velocity, num_control, num_lambda, utime
     global A_res, B_res, D_res, d_res, E_res, F_res, H_res, c_res
     global max_iter, mini_batch_size, Q
@@ -337,7 +341,7 @@ def learning():
             cnt = cnt + 1
 
             period_cnt = period_cnt + 1
-            if period_cnt == 30:
+            if period_cnt == period_threshold:
                 period_cnt = 0
                 period_loss_check = sum(total_loss_list) / len(total_loss_list)
                 total_loss_list = []
