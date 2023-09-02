@@ -128,6 +128,7 @@ E_init = np.zeros(num_lambda * num_state)
 F_init = np.zeros(num_lambda * num_lambda)
 H_init = np.zeros(num_lambda * num_control)
 c_init = np.zeros(num_lambda)
+# c_init[0:4] = 0.02 * np.ones(4)
 
 # reparameterization part F divided into G (upper triangular) and S (skew symmetric)
 G_init = np.zeros(int((num_lambda + 1) * num_lambda / 2))
@@ -141,6 +142,7 @@ B_mask = np.zeros((num_velocity, num_control))
 D_mask = np.zeros((num_velocity, num_lambda))
 d_mask = np.zeros(num_velocity)
 # d_mask = np.ones(num_velocity)
+# d_mask[6:8] = np.ones(2)
 
 E_mask = np.zeros((num_lambda, num_state))
 H_mask = np.zeros((num_lambda, num_control))
@@ -156,7 +158,7 @@ F_stiffness = 1e-1
 # gamma should set to be gamma < F_Stiffness
 gamma = 1e-2
 # epsilon represent the weight put on LCP violation part (weight is 1/epsilon)
-epsilon = 5e-4
+epsilon = 2e-5
 
 
 # also assign weight for each residual, now we only learn from ball velocity residuals
@@ -175,9 +177,10 @@ vn_learner = lcs_class_state_dep_vel.LCS_VN(n_state=num_state, n_control=num_con
 vn_learner.diff(gamma=gamma, epsilon=epsilon, w_D=0e-6, D_ref=0, w_F=0e-6, F_ref=0)
 
 # establish the optimizer, currently choose the Adam gradient descent method
-vn_learning_rate = 1e-2
+vn_learning_rate = 5e-3 # 4e-3 for old gait
 vn_optimizier = opt.Adam()
 vn_optimizier.learning_rate = vn_learning_rate
+learning_stage = 0
 
 # currently, collect data at a fixed frequency, so the timestamp alignment can be done through index search
 data_dt = 0.005
@@ -191,7 +194,7 @@ mini_batch_size = 10
 max_iter = 1
 
 # period setting
-period_time = 1.5 # in the future, try directly read from yaml file (need to be careful about path)
+period_time = 2 # in the future, try directly read from yaml file (need to be careful about path)
 period_threshold = period_time / (data_dt * mini_batch_size)
 
 # gradient buffer setting, the gradient update would use the average of the gradient buffer to update to ensure that the
@@ -229,7 +232,7 @@ def data_grabbing():
         lcm_data.lc.handle()
 
 def learning():
-    global cnt, period_cnt, period_threshold
+    global cnt, period_cnt, period_threshold, learning_stage
     global num_state, num_velocity, num_control, num_lambda, utime
     global A_res, B_res, D_res, d_res, E_res, F_res, H_res, c_res
     global max_iter, mini_batch_size, Q
@@ -297,7 +300,7 @@ def learning():
                                     batch_A=A_batch, batch_B=B_batch, batch_D=D_batch, batch_dynamic_offset=d_batch,
                                     batch_E=E_batch, batch_H=H_batch, batch_F=F_batch, batch_lcp_offset=c_batch)
 
-                vn_curr_theta = vn_optimizier.step(vn_curr_theta, vn_dtheta) # comment this if do not want learning
+                # vn_curr_theta = vn_optimizier.step(vn_curr_theta, vn_dtheta) # comment this if do not want learning
 
                 # data for sanity checking
                 c_grad = vn_learner.lcp_offset_fn(vn_dtheta).full()
@@ -324,21 +327,33 @@ def learning():
             # print('iter:', iter, 'vn_loss: ', vn_mean_loss, 'vn_dyn_loss: ', vn_dyn_loss, 'vn_lcp_loss', vn_lcp_loss)
 
             # convert the learnt parameters into matrices, comment this if do not want learning
-            Start_LCSdata_time = time.time()
-            A_res = vn_learner.A_fn(vn_curr_theta).full()
-            B_res = vn_learner.B_fn(vn_curr_theta).full()
-            D_res = vn_learner.D_fn(vn_curr_theta).full()
-            d_res = vn_learner.dyn_offset_fn(vn_curr_theta).full()
-            E_res = vn_learner.E_fn(vn_curr_theta).full()
-            F_res = vn_learner.F_fn(vn_curr_theta).full()
-            H_res = vn_learner.H_fn(vn_curr_theta).full()
-            c_res = vn_learner.lcp_offset_fn(vn_curr_theta).full()
+            # Start_LCSdata_time = time.time()
+            # A_res = vn_learner.A_fn(vn_curr_theta).full()
+            # B_res = vn_learner.B_fn(vn_curr_theta).full()
+            # D_res = vn_learner.D_fn(vn_curr_theta).full()
+            # d_res = vn_learner.dyn_offset_fn(vn_curr_theta).full()
+            # E_res = vn_learner.E_fn(vn_curr_theta).full()
+            # F_res = vn_learner.F_fn(vn_curr_theta).full()
+            # H_res = vn_learner.H_fn(vn_curr_theta).full()
+            # c_res = vn_learner.lcp_offset_fn(vn_curr_theta).full()
 
             # assign the time for this calculation to be the time of the initial point of the batch data
             utime = int(lcm_data.timestamp_list[cnt*mini_batch_size] * 1e6)
 
             # counter add on to move to next data batch
+
             cnt = cnt + 1
+
+            if cnt > 250 and learning_stage == 0:
+                vn_optimizier.learning_rate = vn_optimizier.learning_rate / 2
+                learning_stage = learning_stage + 1
+            elif cnt > 500 and learning_stage == 1:
+                vn_optimizier.learning_rate = vn_optimizier.learning_rate / 4
+                learning_stage = learning_stage + 1
+            elif cnt > 1000 and learning_stage == 2:
+                vn_optimizier.learning_rate = vn_optimizier.learning_rate / 2
+                learning_stage = learning_stage + 1
+
 
             period_cnt = period_cnt + 1
             if period_cnt == period_threshold:
